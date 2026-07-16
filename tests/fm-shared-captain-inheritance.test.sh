@@ -247,32 +247,38 @@ new_git_world() {
 }
 
 test_spawn_convergence_point_copies_shared_file() {
-  local rec w root home sm fakebin
+  local rec w root home sm fakebin data_override
   rec=$(new_git_world spawn-point)
   IFS='|' read -r w root home sm <<EOF
 $rec
 EOF
+  data_override="$w/primary-data-override"
+  mkdir -p "$data_override"
+  write_shared "$data_override/captain-shared.md" "shared from override"
   fakebin=$(make_fake_spawn_toolchain "$w")
 
   PATH="$fakebin:$BASE_PATH" TMUX='' \
     FM_ROOT_OVERRIDE="$root" FM_HOME="$home" \
-    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$data_override" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 \
     "$ROOT/bin/fm-spawn.sh" sm "$sm" codex --secondmate >/dev/null 2>&1 || true
 
-  cmp -s "$home/data/captain-shared.md" "$sm/data/captain-shared.md" \
-    || fail "spawn convergence point did not copy shared captain preferences"
+  cmp -s "$data_override/captain-shared.md" "$sm/data/captain-shared.md" \
+    || fail "spawn convergence point did not copy shared captain preferences from FM_DATA_OVERRIDE"
   assert_shared_readonly "$sm/data/captain-shared.md"
-  pass "spawn convergence point propagates data/captain-shared.md"
+  pass "spawn convergence point propagates data/captain-shared.md from FM_DATA_OVERRIDE"
 }
 
 test_bootstrap_convergence_point_copies_shared_file() {
-  local rec w root home sm fakebin out
+  local rec w root home sm fakebin data_override out
   rec=$(new_git_world bootstrap-point)
   IFS='|' read -r w root home sm <<EOF
 $rec
 EOF
+  data_override="$w/primary-data-override"
+  mkdir -p "$data_override"
+  write_shared "$data_override/captain-shared.md" "shared from bootstrap override"
   {
     printf 'window=firstmate:fm-sm\n'
     printf 'kind=secondmate\n'
@@ -282,22 +288,25 @@ EOF
   fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi gh treehouse no-mistakes tasks-axi quota-axi
 
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    FM_DATA_OVERRIDE="$data_override" \
     "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
 
   assert_not_contains "$out" "SECONDMATE_SYNC: secondmate sm: skipped: inheritance failed" \
     "bootstrap inheritance should succeed"
-  cmp -s "$home/data/captain-shared.md" "$sm/data/captain-shared.md" \
-    || fail "bootstrap convergence point did not copy shared captain preferences"
+  cmp -s "$data_override/captain-shared.md" "$sm/data/captain-shared.md" \
+    || fail "bootstrap convergence point did not copy shared captain preferences from FM_DATA_OVERRIDE"
   assert_shared_readonly "$sm/data/captain-shared.md"
-  pass "bootstrap convergence point propagates data/captain-shared.md"
+  pass "bootstrap convergence point propagates data/captain-shared.md from FM_DATA_OVERRIDE"
 }
 
 test_config_push_convergence_point_updates_changed_source() {
-  local rec w root home sm out
+  local rec w root home sm data_override out
   rec=$(new_git_world config-push-point)
   IFS='|' read -r w root home sm <<EOF
 $rec
 EOF
+  data_override="$w/primary-data-override"
+  mkdir -p "$data_override"
   {
     printf 'window=firstmate:fm-sm\n'
     printf 'kind=secondmate\n'
@@ -305,17 +314,18 @@ EOF
   } > "$home/state/sm.meta"
   write_shared "$sm/data/captain-shared.md" "old shared bytes"
   chmod "$FM_SHARED_CAPTAIN_MODE" "$sm/data/captain-shared.md"
-  write_shared "$home/data/captain-shared.md" "changed shared bytes"
+  write_shared "$data_override/captain-shared.md" "changed override shared bytes"
 
   out=$(PATH="$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    FM_DATA_OVERRIDE="$data_override" \
     "$ROOT/bin/fm-config-push.sh" 2>/dev/null)
 
   assert_contains "$out" "data/captain-shared.md: pushed - quarantined local drift at" \
     "config-push should report the shared file update and quarantine"
-  cmp -s "$home/data/captain-shared.md" "$sm/data/captain-shared.md" \
-    || fail "config-push convergence point did not update shared captain preferences"
+  cmp -s "$data_override/captain-shared.md" "$sm/data/captain-shared.md" \
+    || fail "config-push convergence point did not update shared captain preferences from FM_DATA_OVERRIDE"
   assert_shared_readonly "$sm/data/captain-shared.md"
-  pass "fm-config-push convergence point updates changed shared captain source bytes"
+  pass "fm-config-push convergence point updates changed shared captain source bytes from FM_DATA_OVERRIDE"
 }
 
 test_session_start_digest_labels_shared_file_and_read_once_rule() {

@@ -87,6 +87,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-tangle-lib.sh disable=SC1091
@@ -293,7 +294,7 @@ secondmate_sync() {
         continue
       }
       meta_home=$(fm_meta_get "$meta" home)
-      [ -n "$meta_home" ] || meta_home=$(secondmate_registry_field "$FM_HOME/data/secondmates.md" "$id" home || true)
+      [ -n "$meta_home" ] || meta_home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home || true)
       if ! validate_secondmate_home "$id" "$meta_home"; then
         echo "NUDGE_SECONDMATES: secondmate $id: send failed: retry target home unsafe: $VALIDATION_ERROR"
         continue
@@ -347,10 +348,10 @@ secondmate_sync() {
       *" $home_real "*) continue ;;
     esac
     propagated_homes="$propagated_homes $home_real"
-    if ! propagate_secondmate_inheritance "$FM_HOME" "$home_real" "$CONFIG"; then
+    if ! propagate_secondmate_inheritance "$FM_HOME" "$home_real" "$CONFIG" "$DATA"; then
       echo "SECONDMATE_SYNC: secondmate $id: skipped: inheritance failed"
     fi
-  done < <(live_secondmate_meta_records "$STATE" "$FM_HOME/data/secondmates.md")
+  done < <(live_secondmate_meta_records "$STATE" "$DATA/secondmates.md")
   return 0
 }
 

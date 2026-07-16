@@ -373,13 +373,14 @@ propagate_shared_captain_preferences() {
 }
 
 propagate_secondmate_inheritance() {
-  local src_home=$1 dest_home=$2 src_config=${3:-} rc
+  local src_home=$1 dest_home=$2 src_config=${3:-} src_data=${4:-} rc
   [ -n "$src_home" ] || return 1
   [ -n "$dest_home" ] || return 1
   [ -n "$src_config" ] || src_config="$src_home/config"
+  [ -n "$src_data" ] || src_data="$src_home/data"
   rc=0
   propagate_inheritable_config "$src_config" "$dest_home/config" || rc=1
-  propagate_shared_captain_preferences "$src_home/data" "$dest_home/data" || rc=1
+  propagate_shared_captain_preferences "$src_data" "$dest_home/data" || rc=1
   return "$rc"
 }
 

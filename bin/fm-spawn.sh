@@ -629,7 +629,7 @@ if [ "$KIND" = secondmate ]; then
   fi
   # Inheritance propagation: push the primary-authoritative local inheritance
   # surface into this secondmate home (fm-config-inherit-lib.sh).
-  propagate_secondmate_inheritance "$FM_HOME" "$PROJ_ABS" "$CONFIG" \
+  propagate_secondmate_inheritance "$FM_HOME" "$PROJ_ABS" "$CONFIG" "$DATA" \
     || echo "warning: secondmate $ID inheritance failed for $PROJ_ABS" >&2
   if [ -f "$PROJ_ABS/data/charter.md" ]; then
     BRIEF="$PROJ_ABS/data/charter.md"

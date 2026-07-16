@@ -33,6 +33,7 @@ Environment overrides follow the rest of firstmate:
   FM_HOME            active firstmate home
   FM_ROOT_OVERRIDE  firstmate repo root
   FM_STATE_OVERRIDE state dir
+  FM_DATA_OVERRIDE  data dir
   FM_CONFIG_OVERRIDE config dir
 EOF
 }
@@ -55,7 +56,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-DATA="$FM_HOME/data"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 SECONDMATES_MD="$DATA/secondmates.md"
 
 "$SCRIPT_DIR/fm-guard.sh" || true
@@ -130,7 +131,7 @@ while IFS='|' read -r id home _window meta; do
     continue
   }
   reports="$reports $report"
-  if FM_CONFIG_INHERIT_REPORT="$report" propagate_secondmate_inheritance "$FM_HOME" "$home_real" "$CONFIG"; then
+  if FM_CONFIG_INHERIT_REPORT="$report" propagate_secondmate_inheritance "$FM_HOME" "$home_real" "$CONFIG" "$DATA"; then
     print_item_report "$report"
   else
     errors=1
