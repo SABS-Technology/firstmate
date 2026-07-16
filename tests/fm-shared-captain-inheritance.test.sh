@@ -282,8 +282,9 @@ EOF
   {
     printf 'window=firstmate:fm-sm\n'
     printf 'kind=secondmate\n'
-    printf 'home=%s\n' "$sm"
   } > "$home/state/sm.meta"
+  printf -- '- sm - fixture secondmate (home: %s; scope: fixture; projects: sample; added 2026-07-16)\n' "$sm" \
+    > "$data_override/secondmates.md"
   fakebin=$(make_fake_spawn_toolchain "$w")
   fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi gh treehouse no-mistakes tasks-axi quota-axi
 
