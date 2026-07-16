@@ -35,6 +35,15 @@
 #                captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
+# Ship and scout briefs carry a "## Pre-flight decisions" section under the task:
+# the human-input design decisions firstmate anticipated, each with the captain's
+# pre-answer when one was given, so the crewmate follows them instead of stalling
+# mid-build. Set FM_PREFLIGHT_DECISIONS='<decisions>' to fill it; absent, it renders
+# a default no-decisions line rather than a placeholder, since most tasks have none.
+# Its standing instruction to the crew is always present: raise an uncovered
+# human-input decision as one batched needs-decision as early as possible.
+# Secondmate charters have no pre-flight section - a charter is a standing scope,
+# not a task with anticipated decisions.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
@@ -221,12 +230,29 @@ EOF
 )
 fi
 
+# Pre-flight decisions carry the human-input design decisions firstmate anticipated
+# for this task, each with the captain's pre-answer when one was given, so a crewmate
+# does not park mid-build on a question that could have been settled at dispatch.
+# FM_PREFLIGHT_DECISIONS fills the body. When it is absent the default line renders,
+# because a task with no anticipated decisions is the normal case: an unfilled section
+# must read as a complete instruction, never as a leaked placeholder.
+# The standing instruction below is always present and is not firstmate-editable.
+PREFLIGHT_DECISIONS=${FM_PREFLIGHT_DECISIONS:-No pre-flight decisions were identified for this task.}
+# shellcheck disable=SC2016  # single quotes are deliberate: the backtick-wrapped `needs-decision:` is literal brief text that must reach the reading agent verbatim, not expand at scaffold time.
+PREFLIGHT_SECTION=$(printf '%s\n%s\n\n%s\n%s' \
+  '## Pre-flight decisions' \
+  "$PREFLIGHT_DECISIONS" \
+  'Any decision recorded above is already answered: follow it rather than re-opening or re-asking it.' \
+  'If you hit a design decision that needs human input and is NOT covered above, raise it as a single batched `needs-decision:` as early as you can - ideally before you build anything on top of it - rather than guessing silently or leaving it to mid-implementation.')
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
 {TASK}
+
+$PREFLIGHT_SECTION
 
 $HERDR_SECTION
 
@@ -253,6 +279,9 @@ The report is the only thing that survives, so anything worth keeping must be in
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   Frame it so it can be answered in one pass: the options and their tradeoffs, your recommendation,
+   and a one-line blast radius - what breaks if the call is wrong, and what would catch it if it does.
+   Keep that framing short; it sharpens the decision and must never delay reporting it.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
@@ -332,6 +361,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
+$PREFLIGHT_SECTION
+
 $HERDR_SECTION
 
 # Setup
@@ -361,6 +392,9 @@ $RULE1
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   Frame it so it can be answered in one pass: the options and their tradeoffs, your recommendation,
+   and a one-line blast radius - what breaks if the call is wrong, and what would catch it if it does.
+   Keep that framing short; it sharpens the decision and must never delay reporting it.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes

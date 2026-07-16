@@ -383,6 +383,7 @@ Private evidence reports may retain exact identifiers, paths, status lines, vali
 
 Every escalation must stand alone and remain concise.
 Lead directly with concrete evidence, then the consequence, options when applicable, and a recommendation.
+When the escalation is a decision, add a one-line blast radius: what breaks if the call is wrong, and what would catch it if it does.
 Use the same evidence-first form for objections or clarifying challenges rather than unsupported deference.
 
 Reach the captain immediately for:
