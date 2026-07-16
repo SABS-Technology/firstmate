@@ -891,8 +891,8 @@ test_bootstrap_sweep_surfaces_config_propagation_failure() {
 
   out=$(run_bootstrap "$w")
 
-  fail_line=$(printf '%s\n' "$out" | grep '^SECONDMATE_SYNC: secondmate sm: skipped: config inheritance failed' || true)
-  [ -n "$fail_line" ] || fail "bootstrap did not surface config propagation failure (got: $out)"
+  fail_line=$(printf '%s\n' "$out" | grep '^SECONDMATE_SYNC: secondmate sm: skipped: inheritance failed' || true)
+  [ -n "$fail_line" ] || fail "bootstrap did not surface inheritance propagation failure (got: $out)"
   [ -d "$w/sm/config/crew-harness" ] || fail "failed propagation removed the wrong path"
   pass "B11 bootstrap sweep surfaces config propagation failures"
 }
@@ -920,7 +920,7 @@ test_config_push_propagates_reports_without_ff_or_nudge() {
   out=$(run_config_push "$w" 2>"$err"); status=$?
 
   expect_code 0 "$status" "config push should succeed"
-  assert_contains "$out" "config-push: $w/home/config -> live secondmate homes" \
+  assert_contains "$out" "config-push: $w/home -> live secondmate homes" \
     "config push lacked the header"
   assert_contains "$out" "secondmate sm ($sm_real):" \
     "config push did not discover the live secondmate through registry fallback"
@@ -978,7 +978,7 @@ test_config_push_reports_skips_dirty_and_invalid_home() {
   expect_code 0 "$status" "warnings-only config push should exit zero"
   assert_contains "$out" "secondmate dirty ($dirty_real):" \
     "config push did not report dirty home"
-  assert_contains "$out" "home: dirty working tree - config-only push continuing" \
+  assert_contains "$out" "home: dirty working tree - local-material push continuing" \
     "config push did not surface dirty state"
   assert_contains "$out" "secondmate stale ($stale_real):" \
     "config push did not report stale home"

@@ -28,11 +28,12 @@
 #          retry marker under state/.secondmate-nudge-pending/ and prints an
 #          actionable NUDGE_SECONDMATES line.
 #          Already-current or no-instruction-change homes are silently left alone.
-#          The secondmate sweep also propagates declared inheritable local config
+#          The secondmate sweep also propagates declared inherited local material
 #          into each validated live secondmate home.
 #          SECONDMATE_SYNC lines report actionable skipped local-HEAD syncs or
-#          config-inheritance failures for live secondmate homes; no-op/current
-#          and successful updates stay quiet.
+#          inheritance failures for live secondmate homes, plus quarantine
+#          diagnostics for divergent shared captain-preference copies;
+#          no-op/current and successful updates stay quiet.
 #          SECONDMATE_LIVENESS lines report only actionable failures from the
 #          deeper agent-liveness verdict (bin/fm-backend.sh's
 #          fm_backend_agent_alive, distinct from endpoint pane-presence):
@@ -329,13 +330,10 @@ secondmate_sync() {
   done < "$tmp"
   rm -f "$tmp"
   unset -f fm_ff_after_instruction_update
-  # Inheritable-config propagation: push the primary's declared LOCAL config
-  # into every VALIDATED live secondmate home swept
-  # above (FF_SEEN_HOMES is exactly that set). config/ is gitignored, so this is a
-  # separate copy from the tracked-files fast-forward; primary-authoritative, so
-  # it runs whether or not the home's tracked files advanced, keeping the fleet
-  # converged on the primary. The propagation helper stays silent on success; a
-  # primary with no inheritable config set and no downstream copy is a no-op.
+  # Inheritance propagation: push the primary-authoritative local inheritance
+  # surface into every VALIDATED live secondmate home swept above.
+  # FF_SEEN_HOMES is exactly that set, and fm-config-inherit-lib.sh owns the
+  # declared config items plus data/captain-shared.md.
   local id home home_real propagated_homes
   propagated_homes=""
   while IFS='|' read -r id home _window _meta; do
@@ -349,8 +347,8 @@ secondmate_sync() {
       *" $home_real "*) continue ;;
     esac
     propagated_homes="$propagated_homes $home_real"
-    if ! propagate_inheritable_config "$CONFIG" "$home_real/config"; then
-      echo "SECONDMATE_SYNC: secondmate $id: skipped: config inheritance failed"
+    if ! propagate_secondmate_inheritance "$FM_HOME" "$home_real" "$CONFIG"; then
+      echo "SECONDMATE_SYNC: secondmate $id: skipped: inheritance failed"
     fi
   done < <(live_secondmate_meta_records "$STATE" "$FM_HOME/data/secondmates.md")
   return 0

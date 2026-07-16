@@ -29,9 +29,9 @@ The goal is a session that is safe to reset or destroy because everything durabl
 
 3. **Write within firstmate's existing write boundaries.**
    This skill does not grant any new write permission; it only prompts firstmate to use the boundaries that already exist (AGENTS.md section 1):
-   - Captain preferences and fleet-local operational facts: hand-write directly, to `data/captain.md` and `data/learnings.md` respectively, using inspect-then-update every time.
+   - Captain preferences and fleet-local operational facts: hand-write directly to the destination selected by AGENTS.md's knowledge-routing table, using inspect-then-update every time.
      Before writing, inspect the destination, find the existing bullet or section the finding duplicates or supersedes, and rewrite it in place rather than adding a new trailing entry.
-     `data/learnings.md` may not exist yet; create it on first learning, in the same dated, evidence-backed, curated style as `data/captain.md`.
+     `data/learnings.md` may not exist yet; create it on first local learning, in the same dated, evidence-backed, curated style as `data/captain.md`.
    - Project-intrinsic knowledge: never hand-write a project's `AGENTS.md`.
      Route it through a normal ship task so a crewmate records it via `bin/fm-ensure-agents-md.sh` and commits it through that project's delivery pipeline, exactly as section 6 describes.
      If the fleet is live, delegate this to a crewmate rather than doing it inline.
