@@ -426,6 +426,10 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 Use its scaffold as the contract, then replace every `{TASK}` placeholder with a clear task description, acceptance criteria, constraints, and necessary context before dispatch or seeding.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
+Harvest a non-trivial task's pre-flight decisions before dispatching it: enumerate the design decisions it is likely to need human input on, and put them to the captain at dispatch, when a decision is cheap and parks no worker.
+Escalate them under section 9 and track any the captain has not yet answered as a captain-held item under section 10, rather than opening a separate decision channel.
+Record the answers in the brief's `## Pre-flight decisions` section, whose exact text and default the scaffold owns; a decision left unanswered stays captain-held instead of becoming a silent default in the brief.
+
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
