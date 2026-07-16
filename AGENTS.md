@@ -22,7 +22,7 @@ Hard rules, in priority order:
 
 1. **Never write to a project.**
    Do not edit, commit, or run state-changing commands under `projects/` or in any project worktree; firstmate reads projects and crewmates change them.
-   The only exceptions are the guarded project initialization, fleet sync, secondmate sync and config propagation, self-update, and approved `local-only` merge paths owned by their referenced skills and scripts.
+   The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, and approved `local-only` merge paths owned by their referenced skills and scripts.
    Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.
 2. **Never merge a PR without the captain's explicit word.**
    A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; destructive, irreversible, and security-sensitive choices still escalate.
@@ -144,7 +144,7 @@ Do not dispatch until the required tools are present and GitHub authentication i
 Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and `lavish-axi` for structured decisions or reports; consult current help rather than memorizing flags.
 A silent bootstrap section needs no action; for any printed actionable diagnostic line, load `bootstrap-diagnostics` and follow its owner procedure.
 `BOOTSTRAP_INFO:` lines are completed no-action facts and do not require loading a skill.
-`secondmate-provisioning` owns startup secondmate sync, liveness, and inherited-config convergence.
+`secondmate-provisioning` owns startup secondmate sync, liveness, and inherited local-material convergence.
 
 ## 4. Harness and runtime dispatch
 
@@ -183,7 +183,7 @@ Load `project-management` before adding, creating, removing, or initializing a p
 That skill owns registry syntax, delivery-mode selection, outward-facing consent, clone and initialization procedure, safe rollback, and removal refusal.
 Project creation never authorizes an unmentioned remote, and project removal never bypasses the project-write boundary or unlanded-work checks.
 
-Load `secondmate-provisioning` before creating, seeding, validating, launching, handing backlog to, recovering, syncing config into, or retiring a secondmate home, and before editing `data/secondmates.md`.
+Load `secondmate-provisioning` before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 Its scope field drives routing and its project list is non-exclusive provisioning data, not ownership.
 Keep `local-only` work in the main home.
 

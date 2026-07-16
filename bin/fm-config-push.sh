@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push declared inheritable local material to live secondmate homes.
+# Push declared inherited local material to live secondmate homes.
 # Usage: fm-config-push.sh [--help]
 #
 # Mid-session convergence for inherited local material such as
@@ -15,7 +15,7 @@ usage() {
   cat <<'EOF'
 Usage: fm-config-push.sh [--help]
 
-Push the primary firstmate home's declared inheritable local material into each
+Push the primary firstmate home's declared inherited local material into each
 live secondmate home.
 
 This is local-material-only:
