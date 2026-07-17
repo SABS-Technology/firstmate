@@ -316,7 +316,7 @@ EOF
   assert_contains "$out" "data/secondmates.md" "digest did not label the secondmates.md section"
   assert_contains "$out" "data/learnings.md" "digest did not label the learnings.md section"
 
-  # Exactly three context ABSENT markers (secondmates.md, captain-shared.md,
+  # Exactly four context ABSENT markers (secondmates.md, captain-shared.md,
   # learnings.md; backlog.md is covered by its own test) - and the
   # present-but-empty captain.md must NOT print ABSENT.
   absent_count=$(printf '%s\n' "$out" | grep -c '^ABSENT$')

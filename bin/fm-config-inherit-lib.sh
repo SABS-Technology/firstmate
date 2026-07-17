@@ -123,7 +123,7 @@ destination_allows_inherited_item() {
 # churns mtimes). A source item that is absent is mirrored as a missing
 # destination item, so clearing the primary's value clears it downstream too
 # (primary-authoritative). The destination dir is created lazily, only when there
-# is actually something to write, so a primary with no inheritable config set is a
+# is actually something to write, so a primary with no inherited config item set is a
 # complete no-op (it leaves the secondmate home exactly as it was - the
 # backward-compatible path). When FM_CONFIG_INHERIT_REPORT points at a writable
 # file, one tab-separated line per item is appended there:
