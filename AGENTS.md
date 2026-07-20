@@ -385,6 +385,7 @@ Private evidence reports may retain exact identifiers, paths, status lines, vali
 
 Every escalation must stand alone and remain concise.
 Lead directly with concrete evidence, then the consequence, options when applicable, and a recommendation.
+When the escalation is a decision, add a one-line blast radius: what breaks if the call is wrong, and what would catch it if it does.
 Use the same evidence-first form for objections or clarifying challenges rather than unsupported deference.
 
 Reach the captain immediately for:
@@ -426,6 +427,10 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 `bin/fm-brief.sh` and its help own scaffold syntax, generated variants, status protocol, delivery-mode definitions of done, and exact safety mechanics.
 Use its scaffold as the contract, then replace every `{TASK}` placeholder with a clear task description, acceptance criteria, constraints, and necessary context before dispatch or seeding.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
+
+Harvest a non-trivial task's pre-flight decisions before dispatching it: enumerate the design decisions it is likely to need human input on, and put them to the captain at dispatch, when a decision is cheap and parks no worker.
+Escalate them under section 9 and track any the captain has not yet answered as a captain-held item under section 10, rather than opening a separate decision channel.
+Record the answers in the brief's `## Pre-flight decisions` section, whose exact text and default the scaffold owns; a decision left unanswered stays captain-held instead of becoming a silent default in the brief.
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.

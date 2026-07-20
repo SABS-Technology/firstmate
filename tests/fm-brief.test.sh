@@ -308,8 +308,109 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# The pre-flight harvest front-loads human-input decisions to dispatch time. Both
+# task scaffolds must carry the section, and an unfilled one must render the default
+# no-decisions line rather than leaking a placeholder into a dispatched brief.
+test_preflight_section_renders_in_ship_and_scout() {
+  local home id brief
+  home="$TMP_ROOT/preflight-home"
+  mkdir -p "$home/data"
+
+  for kind in ship scout; do
+    id="brief-preflight-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "## Pre-flight decisions" "$brief" \
+      "$kind brief is missing the pre-flight decisions section"
+    assert_grep "No pre-flight decisions are recorded for this task." "$brief" \
+      "$kind brief did not render the default no-decisions line"
+    assert_grep "Any decision recorded above is already answered" "$brief" \
+      "$kind brief lost the standing follow-the-pre-answers instruction"
+    assert_grep "raise it as a single batched \`needs-decision:\` as early as you can" "$brief" \
+      "$kind brief lost the raise-uncovered-decisions-early instruction"
+    assert_grep "ideally before you build anything on top of it" "$brief" \
+      "$kind brief lost the raise-before-building bar"
+  done
+  pass "fm-brief.sh: ship and scout briefs carry the pre-flight decisions section"
+}
+
+# When firstmate harvested decisions, its text replaces the default line entirely,
+# and the standing crew instruction still stands.
+test_preflight_decisions_are_firstmate_fillable() {
+  local home id brief
+  home="$TMP_ROOT/preflight-filled-home"
+  mkdir -p "$home/data"
+  id="brief-preflight-filled"
+  FM_HOME="$home" FM_PREFLIGHT_DECISIONS='- Storage backend: captain chose SQLite over Postgres.' \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Storage backend: captain chose SQLite over Postgres." "$brief" \
+    "filled brief did not render the harvested pre-flight decisions"
+  assert_no_grep "No pre-flight decisions are recorded for this task." "$brief" \
+    "filled brief still rendered the default no-decisions line"
+  assert_grep "Any decision recorded above is already answered" "$brief" \
+    "filled brief lost the standing follow-the-pre-answers instruction"
+  pass "fm-brief.sh: harvested pre-flight decisions replace the default line"
+}
+
+# A charter is a standing scope, not a task, so it has no anticipated decisions.
+test_preflight_section_absent_from_secondmate_charter() {
+  local home brief
+  home="$TMP_ROOT/preflight-charter-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='ops domain' \
+    "$ROOT/bin/fm-brief.sh" preflight-mate --secondmate --no-projects >/dev/null 2>&1
+  brief="$home/data/preflight-mate/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
+  assert_no_grep "## Pre-flight decisions" "$brief" \
+    "secondmate charter must not carry a task-scoped pre-flight section"
+  pass "fm-brief.sh: secondmate charter carries no pre-flight section"
+}
+
+# Escalated decisions must arrive answerable in one pass: options, a recommendation,
+# and a blast radius. It is a framing convention, never a gate on reporting. The framing
+# lives where firstmate reads it on wake, never in the status append: supervision reads
+# the LAST status line, so a multi-line append would bury the needs-decision verb behind
+# a verb-less continuation line and degrade captain-relevance and stale triage.
+test_needs_decision_carries_blast_radius_framing() {
+  local home id brief
+  home="$TMP_ROOT/blast-radius-home"
+  mkdir -p "$home/data"
+
+  for kind in ship scout; do
+    id="brief-blast-radius-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "the options and their tradeoffs, your recommendation, and a one-line blast radius" "$brief" \
+      "$kind brief lost the options-and-recommendation decision framing"
+    assert_grep "what breaks if the call is wrong, and what would catch it if it does" "$brief" \
+      "$kind brief lost the blast-radius decision framing"
+    assert_grep "Keep that append to a single short line" "$brief" \
+      "$kind brief let decision framing loosen rule 4's one-line status contract"
+    assert_grep "which firstmate reads on wake" "$brief" \
+      "$kind brief did not send the full decision framing where firstmate reads it"
+    assert_grep "must never delay reporting it" "$brief" \
+      "$kind brief let decision framing become a gate on reporting"
+  done
+  pass "fm-brief.sh: needs-decision framing carries options, recommendation, and blast radius"
+}
+
 test_script_parses
 test_help_includes_entire_header
+test_preflight_section_renders_in_ship_and_scout
+test_preflight_decisions_are_firstmate_fillable
+test_preflight_section_absent_from_secondmate_charter
+test_needs_decision_carries_blast_radius_framing
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
