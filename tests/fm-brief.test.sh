@@ -106,6 +106,48 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD wording avoids the apostrophe regression"
 }
 
+test_no_mistakes_gate_response_contract_is_ship_only() {
+  local home ship scout direct local_brief charter heading
+  home="$TMP_ROOT/gate-response-home"
+  write_registry "$home"
+  heading="# Validation gate-response contract"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" gate-response-ship some-proj >/dev/null 2>&1
+  ship="$home/data/gate-response-ship/brief.md"
+  assert_grep "$heading" "$ship" \
+    "no-mistakes ship brief is missing the validation gate-response contract"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'one `--findings` list, grouped by root cause and dependency-ordered' "$ship" \
+    "gate-response contract lost the all-findings-in-one-response rule"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'Fix only `error` severity in this branch. Skip `warning` and `info` as follow-ups.' "$ship" \
+    "gate-response contract lost the severity rubric"
+  assert_grep 'Documentation wording, justification prose, comment text, and evidence or validation hardening are always follow-ups' "$ship" \
+    "gate-response contract lost the follow-up-class skip rule"
+  assert_grep 'After two fix rounds in one review step, STOP before opening a third.' "$ship" \
+    "gate-response contract lost the two-fix-round limit"
+  assert_grep 'Freeze scope per round, not per finding' "$ship" \
+    "gate-response contract lost round-level scope freeze"
+  assert_grep 'A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.' "$ship" \
+    "gate-response contract weakened the security floor"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" gate-response-scout some-proj --scout >/dev/null 2>&1
+  scout="$home/data/gate-response-scout/brief.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" gate-response-direct direct-proj >/dev/null 2>&1
+  direct="$home/data/gate-response-direct/brief.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" gate-response-local local-proj >/dev/null 2>&1
+  local_brief="$home/data/gate-response-local/brief.md"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER=ops \
+    "$ROOT/bin/fm-brief.sh" gate-response-charter --secondmate --no-projects >/dev/null 2>&1
+  charter="$home/data/gate-response-charter/brief.md"
+
+  for brief in "$scout" "$direct" "$local_brief" "$charter"; do
+    assert_no_grep "$heading" "$brief" \
+      "validation gate-response contract leaked into a non-no-mistakes scaffold"
+  done
+  pass "fm-brief.sh: validation gate-response contract is complete and no-mistakes-ship-only"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -414,6 +456,7 @@ test_needs_decision_carries_blast_radius_framing
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_no_mistakes_gate_response_contract_is_ship_only
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
