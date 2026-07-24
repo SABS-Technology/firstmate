@@ -99,8 +99,9 @@ test_no_mistakes_dod_wording() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
-  assert_grep "no-mistakes itself provides for the mechanics" "$brief" \
-    "no-mistakes DOD lost its guidance-reference sentence"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'The installed no-mistakes SKILL and the live `axi` help are authoritative and version-matched for all gate mechanics.' "$brief" \
+    "no-mistakes DOD lost its installed-guidance ownership reference"
   assert_no_grep "no-mistakes' own guidance" "$brief" \
     "no-mistakes DOD regressed to the apostrophe form that breaks bash -n"
   pass "fm-brief.sh: no-mistakes DOD wording avoids the apostrophe regression"
@@ -116,9 +117,16 @@ test_no_mistakes_gate_response_contract_is_ship_only() {
   ship="$home/data/gate-response-ship/brief.md"
   assert_grep "$heading" "$ship" \
     "no-mistakes ship brief is missing the validation gate-response contract"
-  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
-  assert_grep 'one `--findings` list, grouped by root cause and dependency-ordered' "$ship" \
+  assert_grep 'all findings you will fix in that round together, grouped by root cause and dependency-ordered' "$ship" \
     "gate-response contract lost the all-findings-in-one-response rule"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_no_grep '`--findings`' "$ship" \
+    "gate-response contract duplicated version-sensitive finding-selection syntax"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_no_grep 'skipping records `user_chose_to_ignore`' "$ship" \
+    "gate-response contract duplicated skip-persistence mechanics"
+  assert_no_grep 'complete re-review of the diff' "$ship" \
+    "gate-response contract duplicated review-loop behavior"
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'Fix only `error` severity in this branch. Skip `warning` and `info` as follow-ups.' "$ship" \
     "gate-response contract lost the severity rubric"
