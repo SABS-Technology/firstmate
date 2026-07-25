@@ -33,6 +33,9 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
+# Default no-mistakes ship briefs embed firstmate's version-independent validation
+# gate-response policy; the installed no-mistakes skill and live axi help own
+# version-specific mechanics. Other scaffold variants omit that policy.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Ship and scout briefs carry a "## Pre-flight decisions" section under the task:
