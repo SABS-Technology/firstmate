@@ -360,8 +360,9 @@ This keeps each review round focused, bounded, and security-safe.
 2. Fix only \`error\` severity in this branch. Skip \`warning\` and \`info\` as follow-ups.
 3. Skip the follow-up class instead of fixing it.
    Documentation wording, justification prose, comment text, and evidence or validation hardening are always follow-ups and never fixed in-round.
-4. After two fix rounds in one review step, STOP before opening a third.
-   Append \`needs-decision: review step still returning findings after 2 rounds - {one-line outstanding summary}\` and wait for firstmate.
+4. After three fix rounds in one review step, STOP before opening a fourth.
+   Append \`needs-decision: review step still returning findings after 3 rounds - {one-line outstanding summary}\` and wait for firstmate.
+   This is a checkpoint, not the final limit: firstmate owns whether the run continues, and it carries its own separate cap you are not told.
 5. Freeze scope per round, not per finding: fix exactly the listed findings; report any newly required surface or newly spotted issue as a follow-up candidate instead of expanding the round.
 6. A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.
    If unsure whether an issue clears this bar, escalate to firstmate.

@@ -132,8 +132,12 @@ test_no_mistakes_gate_response_contract_is_ship_only() {
     "gate-response contract lost the severity rubric"
   assert_grep 'Documentation wording, justification prose, comment text, and evidence or validation hardening are always follow-ups' "$ship" \
     "gate-response contract lost the follow-up-class skip rule"
-  assert_grep 'After two fix rounds in one review step, STOP before opening a third.' "$ship" \
-    "gate-response contract lost the two-fix-round limit"
+  assert_grep 'After three fix rounds in one review step, STOP before opening a fourth.' "$ship" \
+    "gate-response contract lost the three-fix-round checkpoint"
+  assert_grep 'This is a checkpoint, not the final limit: firstmate owns whether the run continues' "$ship" \
+    "gate-response contract lost the firstmate-owned continuation checkpoint"
+  assert_no_grep 'separate cap of 4' "$ship" \
+    "gate-response contract leaked the captain-private firstmate cap"
   assert_grep 'Freeze scope per round, not per finding' "$ship" \
     "gate-response contract lost round-level scope freeze"
   assert_grep 'A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.' "$ship" \
