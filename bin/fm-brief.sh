@@ -33,6 +33,9 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
+# Default no-mistakes ship briefs embed firstmate's version-independent validation
+# gate-response policy; the installed no-mistakes skill and live axi help own
+# version-specific mechanics. Other scaffold variants omit that policy.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Ship and scout briefs carry a "## Pre-flight decisions" section under the task:
@@ -348,11 +351,24 @@ When you believe it is complete, append \`done: {summary}\` to the status file a
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
+The installed no-mistakes SKILL and the live \`axi\` help are authoritative and version-matched for all gate mechanics.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
-Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are not yours to answer: escalate to firstmate (rule 6) and stop.
+# Validation gate-response contract
+This keeps each review round focused, bounded, and security-safe.
+1. Respond to every review gate with all findings you will fix in that round together, grouped by root cause and dependency-ordered; never submit one finding per round.
+2. Fix only \`error\` severity in this branch. Skip \`warning\` and \`info\` as follow-ups.
+3. Skip the follow-up class instead of fixing it.
+   Documentation wording, justification prose, comment text, and evidence or validation hardening are always follow-ups and never fixed in-round.
+4. After three fix rounds in one review step, STOP before opening a fourth.
+   Append \`needs-decision: review step still returning findings after 3 rounds - {one-line outstanding summary}\` and wait for firstmate.
+   This is a checkpoint, not the final limit: firstmate owns whether the run continues, and it carries its own separate cap you are not told.
+5. Freeze scope per round, not per finding: fix exactly the listed findings; report any newly required surface or newly spotted issue as a follow-up candidate instead of expanding the round.
+6. A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.
+   If unsure whether an issue clears this bar, escalate to firstmate.
+
+Additional gate rules:
+- ask-user findings are not yours to answer: escalate to firstmate under Rules item 6 and stop.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: the captain, not you, owns the ask-user decisions it would silently auto-resolve.
 
