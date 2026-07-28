@@ -35,6 +35,14 @@ file_mode() {
   fi
 }
 
+file_mtime() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f %m "$1"
+  else
+    stat -c %Y "$1"
+  fi
+}
+
 state_snapshot() {
   local state=$1 file
   (
@@ -513,9 +521,11 @@ test_invalid_entrypoints_have_zero_side_effects() {
 }
 
 test_valid_recording_and_merge_derivation() {
-  local dir expected sidecar count
+  local dir expected sidecar count status_file pause_mtime
   dir=$(make_case valid-recording)
   write_task_meta "$dir"
+  status_file="$dir/home/state/task-a.status"
+  printf 'done: PR checks green\n' > "$status_file"
   expected=0123456789abcdef0123456789abcdef01234567
   FM_TEST_GH_HEAD=$expected run_check_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 \
     > "$dir/stdout" 2> "$dir/stderr" || fail "valid direct check failed"
@@ -537,13 +547,23 @@ test_valid_recording_and_merge_derivation() {
   sidecar=$(cat "$dir/home/state/task-a.pr-poll")
   [ "$sidecar" = $'github\nhttps://github.com/my-org/repo_name.with-dots/pull/37\ngithub.com\nmy-org/repo_name.with-dots\n37' ] \
     || fail "published sidecar bytes were not exact"
+  [ "$(tail -1 "$status_file")" = 'paused: PR https://github.com/my-org/repo_name.with-dots/pull/37 awaiting merge' ] \
+    || fail "PR registration did not declare the merge wait"
+  [ "$(grep -c '^paused: PR https://github.com/my-org/repo_name.with-dots/pull/37 awaiting merge$' "$status_file")" -eq 1 ] \
+    || fail "PR registration did not append exactly one merge-wait declaration"
 
+  pause_mtime=$(file_mtime "$status_file")
+  sleep 1
   FM_TEST_GH_HEAD=$expected run_check_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 \
     >/dev/null 2>/dev/null || fail "valid duplicate check failed"
   count=$(grep -c '^pr=' "$dir/home/state/task-a.meta")
   [ "$count" -eq 1 ] || fail "duplicate pr metadata was appended"
   count=$(grep -c '^pr_head=' "$dir/home/state/task-a.meta")
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
+  [ "$(grep -c '^paused: PR https://github.com/my-org/repo_name.with-dots/pull/37 awaiting merge$' "$status_file")" -eq 1 ] \
+    || fail "duplicate PR registration restamped the merge-wait declaration"
+  [ "$(file_mtime "$status_file")" = "$pause_mtime" ] \
+    || fail "duplicate PR registration reset the merge-wait re-surface clock"
 
   : > "$dir/gh-axi.log"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \

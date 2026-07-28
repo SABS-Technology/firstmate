@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
-# exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# exact pr_head=<sha> when available, atomically arm a static merge poll, and
+# append one idempotent paused: event declaring the bounded merge wait.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -34,6 +35,7 @@ NUMBER=$FM_PR_NUMBER
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
+STATUS="$STATE/$ID.status"
 if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" != 1 ]; then
   echo "error: task metadata is unavailable" >&2
   exit 1
@@ -111,4 +113,11 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+
+PAUSE_LINE="paused: PR $URL awaiting merge"
+LAST_STATUS=$(grep -v '^[[:space:]]*$' "$STATUS" 2>/dev/null | tail -1 || true)
+if [ "$LAST_STATUS" != "$PAUSE_LINE" ]; then
+  printf '%s\n' "$PAUSE_LINE" >> "$STATUS"
+fi
+
 printf 'armed: state/%s.check.sh\n' "$ID"
