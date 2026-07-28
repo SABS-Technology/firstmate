@@ -249,6 +249,17 @@ run_check_entry() {
     "$PR_CHECK" "$@"
 }
 
+run_check_entry_bounded() {
+  local dir=$1
+  shift
+  perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 5; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
+    env FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+      FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
+      FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+      PATH="$dir/fakebin:$BASE_PATH" \
+      "$PR_CHECK" "$@"
+}
+
 run_merge_entry() {
   local dir=$1
   shift
@@ -647,6 +658,92 @@ SH
       || fail "legacy task teardown changed the reserved migration namespace"
   done
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
+}
+
+test_status_declaration_refuses_unsafe_paths() {
+  local dir state status external before rc status_identity external_identity cross_root cross_target
+
+  dir=$(make_case status-symlink)
+  state="$dir/home/state"
+  status="$state/task-a.status"
+  write_task_meta "$dir"
+  external="$dir/external-status"
+  printf 'external status\n' > "$external"
+  before=$(cat "$external")
+  ln -s "$external" "$status"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/41 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR registration accepted a symlinked status path"
+  [ -L "$status" ] || fail "PR registration replaced a symlinked status path"
+  [ "$(cat "$external")" = "$before" ] || fail "PR registration wrote through a status symlink"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "status symlink refusal occurred before the canonical poll was armed"
+
+  dir=$(make_case status-hardlink)
+  state="$dir/home/state"
+  status="$state/task-a.status"
+  write_task_meta "$dir"
+  external="$dir/external-status"
+  printf 'external status\n' > "$external"
+  ln "$external" "$status"
+  before=$(cat "$external")
+  status_identity=$(fm_pr_file_identity "$status")
+  external_identity=$(fm_pr_file_identity "$external")
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/42 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR registration accepted a hard-linked status path"
+  [ "$(fm_pr_file_identity "$status")" = "$status_identity" ] \
+    && [ "$(fm_pr_file_identity "$external")" = "$external_identity" ] \
+    || fail "PR registration replaced a hard-linked status path"
+  [ "$(cat "$external")" = "$before" ] || fail "PR registration wrote through a status hard link"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "status hard-link refusal occurred before the canonical poll was armed"
+
+  dir=$(make_case status-fifo)
+  state="$dir/home/state"
+  status="$state/task-a.status"
+  write_task_meta "$dir"
+  mkfifo "$status"
+  set +e
+  run_check_entry_bounded "$dir" task-a https://github.com/o/r/pull/43 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 124 ] || fail "PR registration blocked while opening a FIFO status path"
+  [ "$rc" -ne 0 ] || fail "PR registration accepted a FIFO status path"
+  [ -p "$status" ] || fail "PR registration replaced a FIFO status path"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "status FIFO refusal occurred before the canonical poll was armed"
+
+  cross_root=
+  for external in /dev/shm /run/shm; do
+    if [ -d "$external" ] && [ -w "$external" ] \
+      && [ "$(fm_pr_file_device "$external")" != "$(fm_pr_file_device "$state")" ]; then
+      cross_root=$external
+      break
+    fi
+  done
+  if [ -n "$cross_root" ]; then
+    cross_target=$(mktemp "$cross_root/fm-pr-status.XXXXXX")
+    FM_TEST_CLEANUP_DIRS+=("$cross_target")
+    printf 'cross-device status\n' > "$cross_target"
+    before=$(cat "$cross_target")
+    rm -f "$status"
+    ln -s "$cross_target" "$status"
+    set +e
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/44 > "$dir/stdout" 2> "$dir/stderr"
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "PR registration accepted a cross-device status path"
+    [ -L "$status" ] || fail "PR registration replaced a cross-device status path"
+    [ "$(cat "$cross_target")" = "$before" ] || fail "PR registration wrote through a cross-device path"
+    rm -f "$cross_target"
+  fi
+
+  pass "PR wait declarations refuse symlinked, hard-linked, FIFO, and cross-device status paths"
 }
 
 run_watcher_bounded() {
@@ -2863,6 +2960,7 @@ test_parser_matrix
 test_gitlab_merge_watch
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
+test_status_declaration_refuses_unsafe_paths
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

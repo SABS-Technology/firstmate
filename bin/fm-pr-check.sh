@@ -115,9 +115,40 @@ fm_pr_poll_publish_prepared || {
 }
 
 PAUSE_LINE="paused: PR $URL awaiting merge"
-LAST_STATUS=$(grep -v '^[[:space:]]*$' "$STATUS" 2>/dev/null | tail -1 || true)
-if [ "$LAST_STATUS" != "$PAUSE_LINE" ]; then
-  printf '%s\n' "$PAUSE_LINE" >> "$STATUS"
+if ! command -v perl >/dev/null 2>&1 || ! perl -MFcntl=:DEFAULT -e '
+  my ($path, $device, $line) = @ARGV;
+  exit 1 unless $device =~ /\A[0-9]+\z/;
+  sysopen(my $file, $path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600)
+    or exit 1;
+  my @stat = stat($file);
+  exit 1 unless @stat && -f _ && $stat[0] == $device && $stat[3] == 1;
+  sysseek($file, 0, 0) or exit 1;
+
+  my ($last, $pending);
+  while (1) {
+    my $read = sysread($file, my $chunk, 8192);
+    exit 1 unless defined $read;
+    last unless $read;
+    $pending .= $chunk;
+    while ($pending =~ s/\A([^\n]*\n)//) {
+      my $record = $1;
+      chop $record;
+      $last = $record if $record =~ /[^[:space:]]/;
+    }
+  }
+  $last = $pending if $pending =~ /[^[:space:]]/;
+
+  if (!defined($last) || $last ne $line) {
+    @stat = stat($file);
+    exit 1 unless @stat && -f _ && $stat[0] == $device && $stat[3] == 1;
+    my $record = "$line\n";
+    my $written = syswrite($file, $record);
+    exit 1 unless defined($written) && $written == length($record);
+  }
+  close($file) or exit 1;
+' "$STATUS" "$STATE_DEVICE" "$PAUSE_LINE" 2>/dev/null; then
+  echo "error: task status is unavailable" >&2
+  exit 1
 fi
 
 printf 'armed: state/%s.check.sh\n' "$ID"
