@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
-# exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# exact pr_head=<sha> when available, atomically arm a static merge poll, and
+# append one idempotent paused: event declaring the bounded merge wait.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -34,6 +35,7 @@ NUMBER=$FM_PR_NUMBER
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
+STATUS="$STATE/$ID.status"
 if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" != 1 ]; then
   echo "error: task metadata is unavailable" >&2
   exit 1
@@ -111,4 +113,42 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+
+PAUSE_LINE="paused: PR $URL awaiting merge"
+if ! command -v perl >/dev/null 2>&1 || ! perl -MFcntl=:DEFAULT -e '
+  my ($path, $device, $line) = @ARGV;
+  exit 1 unless $device =~ /\A[0-9]+\z/;
+  sysopen(my $file, $path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600)
+    or exit 1;
+  my @stat = stat($file);
+  exit 1 unless @stat && -f _ && $stat[0] == $device && $stat[3] == 1;
+  sysseek($file, 0, 0) or exit 1;
+
+  my ($last, $pending);
+  while (1) {
+    my $read = sysread($file, my $chunk, 8192);
+    exit 1 unless defined $read;
+    last unless $read;
+    $pending .= $chunk;
+    while ($pending =~ s/\A([^\n]*\n)//) {
+      my $record = $1;
+      chop $record;
+      $last = $record if $record =~ /[^[:space:]]/;
+    }
+  }
+  $last = $pending if $pending =~ /[^[:space:]]/;
+
+  if (!defined($last) || $last ne $line) {
+    @stat = stat($file);
+    exit 1 unless @stat && -f _ && $stat[0] == $device && $stat[3] == 1;
+    my $record = "$line\n";
+    my $written = syswrite($file, $record);
+    exit 1 unless defined($written) && $written == length($record);
+  }
+  close($file) or exit 1;
+' "$STATUS" "$STATE_DEVICE" "$PAUSE_LINE" 2>/dev/null; then
+  echo "error: task status is unavailable" >&2
+  exit 1
+fi
+
 printf 'armed: state/%s.check.sh\n' "$ID"
