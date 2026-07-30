@@ -33,6 +33,10 @@ test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
   assert_contains "$help" "Refuses to overwrite an existing brief." "fm-brief.sh --help omitted its header terminator"
+  # The owner states its own mode-conditional mechanics; pointer docs must never
+  # carry substance this help omits.
+  assert_contains "$help" "reconciliation and its durable known-open surface are mode-conditional" \
+    "fm-brief.sh --help omits the mode-conditional claim-proof mechanics its pointer docs describe"
   pass "fm-brief.sh: --help renders the complete header"
 }
 
@@ -91,6 +95,8 @@ test_ship_claim_proof_discipline() {
       "$id: ship brief lost the close-while-implementing escape rule"
     assert_grep "as known-open before \`done\` - never pane-only output." "$brief" \
       "$id: ship brief lost the durable known-open reporting surface"
+    assert_grep "cannot be closed within the requested instance" "$brief" \
+      "$id: an escape impossible to close in scope has no stated disposition"
     assert_grep "same defect class beyond the requested instance, name the generalization and escalate it to firstmate" "$brief" \
       "$id: ship brief lost class-generalization escalation"
     assert_grep "Do not fix that generalization or expand the round" "$brief" \
@@ -103,7 +109,7 @@ test_ship_claim_proof_discipline() {
   # that brief may cite them by number; the other modes carry mode-neutral
   # wording, since their own `# Rules` items 3 and 5 say something else entirely.
   brief="$home/data/claim-proof-nm/brief.md"
-  assert_grep "Once a no-mistakes run is active, stop closing escapes: record each open one in the PR body" "$brief" \
+  assert_grep "Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop and record it in the PR body" "$brief" \
     "no-mistakes brief lost the gate-round timing rule for escapes"
   assert_grep "Both preserve the validation gate-response contract below" "$brief" \
     "no-mistakes brief lost its self-contained pointer to the gate-response contract"

@@ -38,7 +38,10 @@
 # version-specific mechanics. Other scaffold variants omit that policy.
 # Every ship brief embeds the claim-proof discipline: falsifying mutations validate
 # only checks already in scope, while broader defect-class generalizations are
-# recorded and escalated without expanding the round.
+# recorded and escalated without expanding the round. Its gate-response
+# reconciliation and its durable known-open surface are mode-conditional: only
+# no-mistakes briefs cite those rules by number, and each mode names the surface
+# it actually produces.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Ship and scout briefs carry a "## Pre-flight decisions" section under the task:
@@ -326,7 +329,7 @@ case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
-    CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, record it in the PR body as known-open before \`done\` - never pane-only output."
+    CLAIM_ESCAPE_LATE="   If one surfaces too late, or cannot be closed within the requested instance, record it in the PR body as known-open before \`done\` - never pane-only output."
     CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
     DOD=$(cat <<EOF
 # Definition of done
@@ -340,7 +343,7 @@ EOF
   local-only)
     SETUP2=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
-    CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, record it in your branch commit message as known-open before \`done\` - never pane-only output."
+    CLAIM_ESCAPE_LATE="   If one surfaces too late, or cannot be closed within the requested instance, record it in your branch commit message as known-open before \`done\` - never pane-only output."
     CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
     DOD=$(cat <<EOF
 # Definition of done
@@ -356,7 +359,7 @@ EOF
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
-    CLAIM_ESCAPE_LATE="   Once a no-mistakes run is active, stop closing escapes: record each open one in the PR body as known-open before \`done\` - never pane-only output."
+    CLAIM_ESCAPE_LATE="   Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop and record it in the PR body as known-open before \`done\` - never pane-only output."
     CLAIM_SCOPE_NOTE='Both preserve the validation gate-response contract below: escape testing validates only an already-scoped fix and adds no finding or surface, and naming a generalization authorizes no follow-up fixing or scope growth (rules 3 and 5).'
     DOD=$(cat <<EOF
 # Definition of done
