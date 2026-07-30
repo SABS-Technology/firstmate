@@ -73,6 +73,34 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+test_ship_claim_proof_discipline() {
+  local home id id_proj proj brief
+  home="$TMP_ROOT/claim-proof-home"
+  write_registry "$home"
+
+  for id_proj in "claim-proof-nm:no-registry-proj" "claim-proof-direct:direct-proj" "claim-proof-local:local-proj"; do
+    id=${id_proj%%:*}
+    proj=${id_proj##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Claim-proof discipline" "$brief" \
+      "$id: ship brief is missing the claim-proof discipline"
+    assert_grep "name and execute the smallest edits that make the claim false" "$brief" \
+      "$id: ship brief lost the falsifying-mutation requirement"
+    assert_grep "Close any falsifying edit the check leaves green, or report it as known-open before done." "$brief" \
+      "$id: ship brief lost the escape disposition requirement"
+    assert_grep "This validates only a fix already in scope; it adds no finding or surface to the round." "$brief" \
+      "$id: escape testing was not reconciled with frozen round scope"
+    assert_grep "same defect class beyond the requested instance, name the generalization and escalate it to firstmate" "$brief" \
+      "$id: ship brief lost class-generalization escalation"
+    assert_grep "Do not fix that generalization or expand the round" "$brief" \
+      "$id: class generalization could be read as authorizing scope growth"
+    assert_grep "This preserves gate-response rules 3 and 5" "$brief" \
+      "$id: ship brief lost its explicit gate-response reconciliation"
+  done
+  pass "fm-brief.sh: every ship mode carries bounded claim-proof discipline"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -534,6 +562,7 @@ test_preflight_decisions_are_firstmate_fillable
 test_preflight_section_absent_from_secondmate_charter
 test_needs_decision_carries_blast_radius_framing
 test_ship_modes_generate_clean_briefs
+test_ship_claim_proof_discipline
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_gate_response_contract_is_ship_only

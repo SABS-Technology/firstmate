@@ -36,6 +36,9 @@
 # Default no-mistakes ship briefs embed firstmate's version-independent validation
 # gate-response policy; the installed no-mistakes skill and live axi help own
 # version-specific mechanics. Other scaffold variants omit that policy.
+# Every ship brief embeds the claim-proof discipline: falsifying mutations validate
+# only checks already in scope, while broader defect-class generalizations are
+# recorded and escalated without expanding the round.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Ship and scout briefs carry a "## Pre-flight decisions" section under the task:
@@ -432,6 +435,14 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+# Claim-proof discipline
+1. For each added or changed check meant to prove a claim, name and execute the smallest edits that make the claim false.
+   Close any falsifying edit the check leaves green, or report it as known-open before done.
+   This validates only a fix already in scope; it adds no finding or surface to the round.
+2. If an in-scope fix reveals the same defect class beyond the requested instance, name the generalization and escalate it to firstmate.
+   Do not fix that generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.
+   This preserves gate-response rules 3 and 5: recording and escalation do not authorize follow-up fixing or scope growth.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
