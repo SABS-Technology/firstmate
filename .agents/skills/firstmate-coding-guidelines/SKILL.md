@@ -38,6 +38,7 @@ Every other mention of it is a one-line cross-reference, never a restatement.
 A single deliberate one-line reinforcement at a genuine risk point is allowed, for example a "don't forget X" placed exactly where forgetting X is costly.
 Restating the contract's substance a second time is not allowed: the two copies will drift the moment only one is edited.
 When you touch a contract, grep the repo for its other mentions and update the cross-references, not duplicate the change into a second full copy.
+For the ship brief's claim-proof discipline, `bin/fm-brief.sh` is that owner; other instruction surfaces point to it rather than copying its rules.
 
 ## Inline-stub pattern
 

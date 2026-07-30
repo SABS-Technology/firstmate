@@ -36,6 +36,12 @@
 # Default no-mistakes ship briefs embed firstmate's version-independent validation
 # gate-response policy; the installed no-mistakes skill and live axi help own
 # version-specific mechanics. Other scaffold variants omit that policy.
+# Every ship brief embeds the claim-proof discipline: falsifying mutations validate
+# only checks already in scope, while broader defect-class generalizations are
+# recorded and escalated without expanding the round. Its gate-response
+# reconciliation and its durable known-open surface are mode-conditional: only
+# no-mistakes briefs cite those rules by number, and each mode names the surface
+# it actually produces.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Ship and scout briefs carry a "## Pre-flight decisions" section under the task:
@@ -323,6 +329,8 @@ case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+    CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, or cannot be closed within the requested instance, record it in the PR body as known-open before \`done\` - never pane-only output."
+    CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
     DOD=$(cat <<EOF
 # Definition of done
 This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
@@ -335,6 +343,8 @@ EOF
   local-only)
     SETUP2=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
+    CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, or cannot be closed within the requested instance, record it in your branch commit message as known-open before \`done\` - never pane-only output."
+    CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
     DOD=$(cat <<EOF
 # Definition of done
 This project ships **local-only**: no remote, no PR, no pipeline.
@@ -349,6 +359,8 @@ EOF
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
+    CLAIM_ESCAPE_LATE="   Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop closing escapes and record it in the PR body as known-open before \`done\` - never pane-only output."
+    CLAIM_SCOPE_NOTE='Both preserve the validation gate-response contract below: escape testing validates only an already-scoped fix and adds no finding or surface, and naming a generalization authorizes no follow-up fixing or scope growth (rules 3 and 5).'
     DOD=$(cat <<EOF
 # Definition of done
 The task is complete only when committed on your branch.
@@ -432,6 +444,14 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+# Claim-proof discipline
+1. For each added or changed check meant to prove a claim, name and execute the smallest edits that make the claim false.
+   While implementing, close any falsifying edit the check leaves green.
+$CLAIM_ESCAPE_LATE
+2. If an in-scope fix reveals the same defect class beyond the requested instance, name the generalization and escalate it to firstmate.
+   Do not fix that generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.
+$CLAIM_SCOPE_NOTE
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

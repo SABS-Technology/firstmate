@@ -33,6 +33,10 @@ test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
   assert_contains "$help" "Refuses to overwrite an existing brief." "fm-brief.sh --help omitted its header terminator"
+  # The owner states its own mode-conditional mechanics; pointer docs must never
+  # carry substance this help omits.
+  assert_contains "$help" "reconciliation and its durable known-open surface are mode-conditional" \
+    "fm-brief.sh --help omits the mode-conditional claim-proof mechanics its pointer docs describe"
   pass "fm-brief.sh: --help renders the complete header"
 }
 
@@ -71,6 +75,65 @@ test_ship_modes_generate_clean_briefs() {
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
+}
+
+test_ship_claim_proof_discipline() {
+  local home id id_proj proj brief
+  home="$TMP_ROOT/claim-proof-home"
+  write_registry "$home"
+
+  for id_proj in "claim-proof-nm:no-registry-proj" "claim-proof-direct:direct-proj" "claim-proof-local:local-proj"; do
+    id=${id_proj%%:*}
+    proj=${id_proj##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Claim-proof discipline" "$brief" \
+      "$id: ship brief is missing the claim-proof discipline"
+    assert_grep "name and execute the smallest edits that make the claim false" "$brief" \
+      "$id: ship brief lost the falsifying-mutation requirement"
+    assert_grep "While implementing, close any falsifying edit the check leaves green." "$brief" \
+      "$id: ship brief lost the close-while-implementing escape rule"
+    assert_grep "as known-open before \`done\` - never pane-only output." "$brief" \
+      "$id: ship brief lost the durable known-open reporting surface"
+    assert_grep "cannot be closed within the requested instance" "$brief" \
+      "$id: an escape impossible to close in scope has no stated disposition"
+    assert_grep "same defect class beyond the requested instance, name the generalization and escalate it to firstmate" "$brief" \
+      "$id: ship brief lost class-generalization escalation"
+    assert_grep "Do not fix that generalization or expand the round" "$brief" \
+      "$id: class generalization could be read as authorizing scope growth"
+    assert_grep "authorizes no follow-up fixing or scope growth" "$brief" \
+      "$id: ship brief lost its scope-growth reconciliation"
+  done
+
+  # Gate-response rules 3 and 5 exist only in the no-mistakes contract, so only
+  # that brief may cite them by number; the other modes carry mode-neutral
+  # wording, since their own `# Rules` items 3 and 5 say something else entirely.
+  brief="$home/data/claim-proof-nm/brief.md"
+  assert_grep "Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop closing escapes and record it in the PR body" "$brief" \
+    "no-mistakes brief lost the gate-round timing rule for escapes"
+  assert_grep "Both preserve the validation gate-response contract below" "$brief" \
+    "no-mistakes brief lost its self-contained pointer to the gate-response contract"
+  assert_grep "scope growth (rules 3 and 5)." "$brief" \
+    "no-mistakes brief lost its explicit gate-response rule reconciliation"
+
+  assert_grep "record it in the PR body as known-open" "$home/data/claim-proof-direct/brief.md" \
+    "direct-PR brief must name the PR body as the durable known-open surface"
+  assert_grep "record it in your branch commit message as known-open" "$home/data/claim-proof-local/brief.md" \
+    "local-only brief must name a surface it actually produces, not a PR body"
+  for id in claim-proof-direct claim-proof-local; do
+    brief="$home/data/$id/brief.md"
+    assert_grep "Neither rule widens the task" "$brief" \
+      "$id: brief lost the mode-neutral scope reconciliation"
+    assert_grep "If one surfaces too late to close in scope, or cannot be closed" "$brief" \
+      "$id: the late-escape trigger lost its completion and reads as a dangling clause"
+    assert_no_grep "rules 3 and 5" "$brief" \
+      "$id: brief cites gate-response rules its scaffold never defines"
+    assert_no_grep "gate-response" "$brief" \
+      "$id: brief references the no-mistakes-only gate-response contract"
+    assert_no_grep "Once a no-mistakes run is active" "$brief" \
+      "$id: brief leaked no-mistakes gate-round timing into a non-pipeline mode"
+  done
+  pass "fm-brief.sh: every ship mode carries bounded claim-proof discipline"
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
@@ -534,6 +597,7 @@ test_preflight_decisions_are_firstmate_fillable
 test_preflight_section_absent_from_secondmate_charter
 test_needs_decision_carries_blast_radius_framing
 test_ship_modes_generate_clean_briefs
+test_ship_claim_proof_discipline
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_gate_response_contract_is_ship_only
