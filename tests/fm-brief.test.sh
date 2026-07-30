@@ -109,7 +109,7 @@ test_ship_claim_proof_discipline() {
   # that brief may cite them by number; the other modes carry mode-neutral
   # wording, since their own `# Rules` items 3 and 5 say something else entirely.
   brief="$home/data/claim-proof-nm/brief.md"
-  assert_grep "Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop and record it in the PR body" "$brief" \
+  assert_grep "Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop closing escapes and record it in the PR body" "$brief" \
     "no-mistakes brief lost the gate-round timing rule for escapes"
   assert_grep "Both preserve the validation gate-response contract below" "$brief" \
     "no-mistakes brief lost its self-contained pointer to the gate-response contract"
@@ -124,6 +124,8 @@ test_ship_claim_proof_discipline() {
     brief="$home/data/$id/brief.md"
     assert_grep "Neither rule widens the task" "$brief" \
       "$id: brief lost the mode-neutral scope reconciliation"
+    assert_grep "If one surfaces too late to close in scope, or cannot be closed" "$brief" \
+      "$id: the late-escape trigger lost its completion and reads as a dangling clause"
     assert_no_grep "rules 3 and 5" "$brief" \
       "$id: brief cites gate-response rules its scaffold never defines"
     assert_no_grep "gate-response" "$brief" \
