@@ -87,16 +87,43 @@ test_ship_claim_proof_discipline() {
       "$id: ship brief is missing the claim-proof discipline"
     assert_grep "name and execute the smallest edits that make the claim false" "$brief" \
       "$id: ship brief lost the falsifying-mutation requirement"
-    assert_grep "Close any falsifying edit the check leaves green, or report it as known-open before done." "$brief" \
-      "$id: ship brief lost the escape disposition requirement"
-    assert_grep "This validates only a fix already in scope; it adds no finding or surface to the round." "$brief" \
-      "$id: escape testing was not reconciled with frozen round scope"
+    assert_grep "While implementing, close any falsifying edit the check leaves green." "$brief" \
+      "$id: ship brief lost the close-while-implementing escape rule"
+    assert_grep "as known-open before \`done\` - never pane-only output." "$brief" \
+      "$id: ship brief lost the durable known-open reporting surface"
     assert_grep "same defect class beyond the requested instance, name the generalization and escalate it to firstmate" "$brief" \
       "$id: ship brief lost class-generalization escalation"
     assert_grep "Do not fix that generalization or expand the round" "$brief" \
       "$id: class generalization could be read as authorizing scope growth"
-    assert_grep "This preserves gate-response rules 3 and 5" "$brief" \
-      "$id: ship brief lost its explicit gate-response reconciliation"
+    assert_grep "authorizes no follow-up fixing or scope growth" "$brief" \
+      "$id: ship brief lost its scope-growth reconciliation"
+  done
+
+  # Gate-response rules 3 and 5 exist only in the no-mistakes contract, so only
+  # that brief may cite them by number; the other modes carry mode-neutral
+  # wording, since their own `# Rules` items 3 and 5 say something else entirely.
+  brief="$home/data/claim-proof-nm/brief.md"
+  assert_grep "Once a no-mistakes run is active, stop closing escapes: record each open one in the PR body" "$brief" \
+    "no-mistakes brief lost the gate-round timing rule for escapes"
+  assert_grep "Both preserve the validation gate-response contract below" "$brief" \
+    "no-mistakes brief lost its self-contained pointer to the gate-response contract"
+  assert_grep "scope growth (rules 3 and 5)." "$brief" \
+    "no-mistakes brief lost its explicit gate-response rule reconciliation"
+
+  assert_grep "record it in the PR body as known-open" "$home/data/claim-proof-direct/brief.md" \
+    "direct-PR brief must name the PR body as the durable known-open surface"
+  assert_grep "record it in your branch commit message as known-open" "$home/data/claim-proof-local/brief.md" \
+    "local-only brief must name a surface it actually produces, not a PR body"
+  for id in claim-proof-direct claim-proof-local; do
+    brief="$home/data/$id/brief.md"
+    assert_grep "Neither rule widens the task" "$brief" \
+      "$id: brief lost the mode-neutral scope reconciliation"
+    assert_no_grep "rules 3 and 5" "$brief" \
+      "$id: brief cites gate-response rules its scaffold never defines"
+    assert_no_grep "gate-response" "$brief" \
+      "$id: brief references the no-mistakes-only gate-response contract"
+    assert_no_grep "Once a no-mistakes run is active" "$brief" \
+      "$id: brief leaked no-mistakes gate-round timing into a non-pipeline mode"
   done
   pass "fm-brief.sh: every ship mode carries bounded claim-proof discipline"
 }

@@ -326,6 +326,8 @@ case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+    CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, record it in the PR body as known-open before \`done\` - never pane-only output."
+    CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
     DOD=$(cat <<EOF
 # Definition of done
 This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
@@ -338,6 +340,8 @@ EOF
   local-only)
     SETUP2=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
+    CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, record it in your branch commit message as known-open before \`done\` - never pane-only output."
+    CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
     DOD=$(cat <<EOF
 # Definition of done
 This project ships **local-only**: no remote, no PR, no pipeline.
@@ -352,6 +356,8 @@ EOF
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
+    CLAIM_ESCAPE_LATE="   Once a no-mistakes run is active, stop closing escapes: record each open one in the PR body as known-open before \`done\` - never pane-only output."
+    CLAIM_SCOPE_NOTE='Both preserve the validation gate-response contract below: escape testing validates only an already-scoped fix and adds no finding or surface, and naming a generalization authorizes no follow-up fixing or scope growth (rules 3 and 5).'
     DOD=$(cat <<EOF
 # Definition of done
 The task is complete only when committed on your branch.
@@ -438,11 +444,11 @@ $RULE1
 
 # Claim-proof discipline
 1. For each added or changed check meant to prove a claim, name and execute the smallest edits that make the claim false.
-   Close any falsifying edit the check leaves green, or report it as known-open before done.
-   This validates only a fix already in scope; it adds no finding or surface to the round.
+   While implementing, close any falsifying edit the check leaves green.
+$CLAIM_ESCAPE_LATE
 2. If an in-scope fix reveals the same defect class beyond the requested instance, name the generalization and escalate it to firstmate.
    Do not fix that generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.
-   This preserves gate-response rules 3 and 5: recording and escalation do not authorize follow-up fixing or scope growth.
+$CLAIM_SCOPE_NOTE
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

@@ -63,7 +63,7 @@ A crewmate picking up such a brief should load the skill even if the brief preda
 When supervising live crewmates, keep firstmate's own long validation or build commands in the background so watcher wakes can still be handled.
 Crewmate validation follows the installed no-mistakes version's SKILL.md and live `axi` help instead of duplicating gate mechanics in firstmate docs.
 `bin/fm-brief.sh` adds firstmate's version-independent gate-response policy only to no-mistakes ship briefs.
-It also owns the claim-proof discipline emitted by every ship brief and its reconciliation with that gate-response scope.
+It also owns the claim-proof discipline emitted by every ship brief, naming that gate-response scope only where the contract exists and a mode-appropriate durable surface for known-open escapes elsewhere.
 That wrapper also routes `ask-user` findings to the captain through firstmate, and crewmates avoid `--yes` because it silently resolves captain-owned decisions without escalation.
 Local `.no-mistakes/` state and test evidence stay out of this repo; `.no-mistakes.yaml` keeps evidence in a temp directory and pins the gate's lint command to `bin/fm-lint.sh`, matching the Linux CI lint job.
 Local no-mistakes Test is intent-targeted and must not re-run every `tests/*.test.sh`; `.github/workflows/ci.yml` owns the broad behavior suite plus platform-specific compatibility lanes.
