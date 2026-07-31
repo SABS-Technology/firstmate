@@ -81,6 +81,11 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   After that isolation check, ship/scout spawns initialize or sync CodeGraph
+#   only when .codegraph/ is git-ignored in the task worktree.
+#   CodeGraph work is bounded to 30 seconds and always fails open with one warning.
+#   The codegraph= metadata field records whether the worktree was initialized,
+#   synced, skipped, timed out, or encountered an error before launch.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -800,6 +805,65 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+run_codegraph_bounded() {  # <init|sync> <worktree>
+  local action=$1 worktree=$2 timeout_seconds=30
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_seconds" codegraph "$action" "$worktree"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$timeout_seconds" codegraph "$action" "$worktree"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
+      "$timeout_seconds" codegraph "$action" "$worktree"
+  else
+    return 125
+  fi
+}
+
+index_task_worktree() {
+  local action success_status rc
+  CODEGRAPH_STATUS=skipped-not-ignored
+  if [ "$KIND" = secondmate ]; then
+    CODEGRAPH_STATUS=skipped-non-task
+    return 0
+  fi
+  if ! git -C "$WT" check-ignore -q .codegraph; then
+    return 0
+  fi
+  if [ -d "$WT/.codegraph" ]; then
+    action=sync
+    success_status=synced
+  else
+    action=init
+    success_status=initialized
+  fi
+  if ! command -v codegraph >/dev/null 2>&1; then
+    CODEGRAPH_STATUS="${action}-unavailable"
+    echo "warning: CodeGraph $action skipped for task $ID because codegraph is unavailable; spawn will continue" >&2
+    return 0
+  fi
+  if run_codegraph_bounded "$action" "$WT" >/dev/null 2>&1; then
+    CODEGRAPH_STATUS=$success_status
+    return 0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    124)
+      CODEGRAPH_STATUS="${action}-timeout"
+      echo "warning: CodeGraph $action timed out after 30s for task $ID; spawn will continue" >&2
+      ;;
+    125)
+      CODEGRAPH_STATUS="${action}-unavailable"
+      echo "warning: CodeGraph $action skipped for task $ID because no timeout runner is available; spawn will continue" >&2
+      ;;
+    *)
+      CODEGRAPH_STATUS="${action}-failed"
+      echo "warning: CodeGraph $action failed for task $ID with exit $rc; spawn will continue" >&2
+      ;;
+  esac
+  return 0
+}
+
 # A stale presentation journal never grants launch authority.
 # When authoritative metadata already exists, require its endpoint to be
 # positively dead before the journal's read-only token inspection may allow a
@@ -1084,6 +1148,8 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   validate_spawn_worktree "treehouse get" "$T"
 fi
 
+index_task_worktree
+
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
@@ -1224,6 +1290,7 @@ META_WINDOW=$T
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  echo "codegraph=$CODEGRAPH_STATUS"
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
   # data/fm-backend-design-d7's P1 compatibility contract).
