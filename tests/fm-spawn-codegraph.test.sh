@@ -100,16 +100,30 @@ SH
   chmod +x "$fakebin/tmux" "$fakebin/treehouse" "$fakebin/timeout" "$fakebin/codegraph"
 }
 
+# PATH with every directory holding a real codegraph removed, so the
+# unavailable-binary case is deterministic on machines that have CodeGraph
+# installed. Everything else the spawn path needs stays on PATH.
+path_without_codegraph() {
+  local dir out=''
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    [ -x "$dir/codegraph" ] || out="$out$dir:"
+  done <<EOF
+$(printf '%s' "$PATH" | tr ':' '\n')
+EOF
+  printf '%s' "${out%:}"
+}
+
 run_spawn() {
-  local result=${1:-ok} timeout_result=${2:-run}
+  local result=${1:-ok} timeout_result=${2:-run} extra=${3:-}
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
     FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" FM_FAKE_CODEGRAPH_RESULT="$result" \
     FM_FAKE_CODEGRAPH_STATE="$INDEX_STATE" \
-    FM_FAKE_TIMEOUT_RESULT="$timeout_result" PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$ID" "$PROJ_DIR" 2>&1
+    FM_FAKE_TIMEOUT_RESULT="$timeout_result" PATH="$FAKEBIN_DIR:${SPAWN_PATH:-$PATH}" \
+    "$SPAWN" "$ID" "$PROJ_DIR" ${extra:+"$extra"} 2>&1
 }
 
 test_ignored_absent_initializes() {
@@ -171,7 +185,7 @@ test_not_ignored_skips() {
 }
 
 test_nonzero_fails_open() {
-  local rec out status warning_count
+  local rec out status warning_count attempts
   rec=$(make_case failure yes none)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
@@ -185,7 +199,9 @@ test_nonzero_fails_open() {
   [ "$warning_count" -eq 1 ] || fail "CodeGraph failure printed $warning_count warnings instead of one"
   assert_grep 'codegraph=init-failed' "$HOME_DIR/state/$ID.meta" "failure outcome was not recorded in meta"
   [ ! -e "$WT_DIR/.codegraph" ] || fail "failed CodeGraph init left an unusable index behind"
-  pass "CodeGraph non-zero exit warns once, records failure, discards the partial index, and fails open"
+  attempts=$(grep -c "^init $WT_DIR" "$CASE_DIR/codegraph.log")
+  [ "$attempts" -eq 1 ] || fail "failed CodeGraph init was attempted $attempts times instead of once"
+  pass "CodeGraph non-zero exit warns once, records failure, discards the partial index, does not retry, and fails open"
 }
 
 test_timeout_fails_open() {
@@ -220,6 +236,40 @@ test_no_timeout_runner_preserves_index() {
   pass "no timeout runner leaves the existing index untouched, warns once, and fails open"
 }
 
+test_scout_worktree_initializes() {
+  local rec out status
+  rec=$(make_case scout yes none)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  out=$(run_spawn ok run --scout)
+  status=$?
+  expect_code 0 "$status" "scout CodeGraph spawn should succeed"
+  assert_contains "$out" "spawned $ID" "scout spawn did not launch"
+  assert_grep 'kind=scout' "$HOME_DIR/state/$ID.meta" "scout spawn did not record kind=scout"
+  assert_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "scout worktree did not run codegraph init"
+  assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "scout init outcome was not recorded in meta"
+  pass "scout worktree without an index runs CodeGraph init"
+}
+
+test_missing_binary_fails_open() {
+  local rec out status warning_count
+  rec=$(make_case nobinary yes none)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  rm -f "$FAKEBIN_DIR/codegraph"
+  SPAWN_PATH=$(path_without_codegraph)
+  out=$(run_spawn)
+  status=$?
+  unset SPAWN_PATH
+  expect_code 0 "$status" "missing codegraph binary must not block spawn"
+  assert_contains "$out" "spawned $ID" "missing codegraph binary prevented launch"
+  assert_contains "$out" "warning: CodeGraph init skipped for task $ID because codegraph is unavailable; spawn will continue" "missing binary warning was unclear"
+  warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
+  [ "$warning_count" -eq 1 ] || fail "missing codegraph binary printed $warning_count warnings instead of one"
+  assert_grep 'codegraph=init-unavailable' "$HOME_DIR/state/$ID.meta" "unavailable outcome was not recorded in meta"
+  pass "missing codegraph binary warns once, records the outcome, and fails open"
+}
+
 test_ignored_absent_initializes
 test_partial_index_initializes
 test_complete_index_syncs
@@ -227,5 +277,7 @@ test_not_ignored_skips
 test_nonzero_fails_open
 test_timeout_fails_open
 test_no_timeout_runner_preserves_index
+test_scout_worktree_initializes
+test_missing_binary_fails_open
 
 echo "# all fm-spawn CodeGraph tests passed"
