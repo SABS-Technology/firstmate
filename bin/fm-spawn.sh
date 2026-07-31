@@ -80,10 +80,11 @@
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
-#   git worktree root distinct from the primary project checkout.
+#   linked worktree of the selected repository, distinct from its primary checkout.
 #   After that isolation check, ship/scout spawns initialize or sync CodeGraph
 #   only when .codegraph/ is git-ignored in the task worktree.
-#   CodeGraph work is bounded to 30 seconds and always fails open with one warning.
+#   CodeGraph status plus action share one 30-second TERM-then-KILL deadline and
+#   always fail open with one warning.
 #   The codegraph= metadata field records whether the worktree was initialized,
 #   synced, skipped, timed out, or encountered an error before launch.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
@@ -779,6 +780,16 @@ real_path_or_raw() {  # <path>
   fi
 }
 
+git_common_dir_real() {  # <checkout>
+  local checkout=$1 common
+  common=$(git -C "$checkout" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) ;;
+    *) common="$checkout/$common" ;;
+  esac
+  cd "$common" 2>/dev/null && pwd -P
+}
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -788,7 +799,7 @@ real_path_or_raw() {  # <path>
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
-  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real wt_common proj_common
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -803,17 +814,45 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+  wt_common=$(git_common_dir_real "$wt_real" || true)
+  proj_common=$(git_common_dir_real "$proj_real" || true)
+  if [ -z "$wt_common" ] || [ -z "$proj_common" ] || [ "$wt_common" != "$proj_common" ]; then
+    echo "error: $source worktree '$WT' does not belong to selected repository '$PROJ_ABS'; refusing to launch. Inspect target $inspect_target" >&2
+    exit 1
+  fi
 }
 
-run_codegraph_bounded() {  # <timeout-seconds> <codegraph-args...>
-  local timeout_seconds=$1
+CODEGRAPH_TOTAL_TIMEOUT_SECONDS=30
+CODEGRAPH_KILL_GRACE_SECONDS=1
+
+run_codegraph_bounded() {  # <deadline-seconds> <codegraph-args...>
+  local deadline_seconds=$1 timeout_seconds rc
+  local CODEGRAPH_DIR=.codegraph
+  export CODEGRAPH_DIR
   shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$timeout_seconds" codegraph "$@"
+  timeout_seconds=$((deadline_seconds - SECONDS - CODEGRAPH_KILL_GRACE_SECONDS))
+  [ "$timeout_seconds" -gt 0 ] || return 124
+  if [ "${FM_SPAWN_NO_GUARD:-0}" = 1 ] && [ "${FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER:-}" = perl ]; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $s = $?; alarm 0; exit(($s & 127) ? 128 + ($s & 127) : $s >> 8)' \
+      "$timeout_seconds" codegraph "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    if timeout --kill-after="${CODEGRAPH_KILL_GRACE_SECONDS}s" "${timeout_seconds}s" codegraph "$@"; then
+      return 0
+    else
+      rc=$?
+    fi
+    [ "$rc" -ne 137 ] || return 124
+    return "$rc"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$timeout_seconds" codegraph "$@"
+    if gtimeout --kill-after="${CODEGRAPH_KILL_GRACE_SECONDS}s" "${timeout_seconds}s" codegraph "$@"; then
+      return 0
+    else
+      rc=$?
+    fi
+    [ "$rc" -ne 137 ] || return 124
+    return "$rc"
   elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $s = $?; alarm 0; exit(($s & 127) ? 128 + ($s & 127) : $s >> 8)' \
       "$timeout_seconds" codegraph "$@"
   else
     return 125
@@ -827,23 +866,29 @@ run_codegraph_bounded() {  # <timeout-seconds> <codegraph-args...>
 # (`indexing`/`partial`/`failed` otherwise), surfaced by `status --json` as
 # `index.state`. Only that positive proof selects sync; anything else - probe
 # failure, missing marker, older CLI that does not report it - selects init.
-codegraph_index_is_complete() {  # <worktree>
-  local worktree=$1 probe
-  probe=$(run_codegraph_bounded 10 status --json "$worktree" 2>/dev/null) || return 1
+codegraph_index_is_complete() {  # <worktree> <deadline-seconds>
+  local worktree=$1 deadline_seconds=$2 probe
+  probe=$(run_codegraph_bounded "$deadline_seconds" status --json "$worktree" 2>/dev/null) || return 1
   printf '%s' "$probe" | grep -Eq '"initialized"[[:space:]]*:[[:space:]]*true' || return 1
   printf '%s' "$probe" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"complete"'
 }
 
 codegraph_timeout_runner_available() {
+  if [ "${FM_SPAWN_NO_GUARD:-0}" = 1 ] && [ "${FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER:-}" = perl ]; then
+    command -v perl >/dev/null 2>&1
+    return
+  fi
   command -v timeout >/dev/null 2>&1 ||
     command -v gtimeout >/dev/null 2>&1 ||
     command -v perl >/dev/null 2>&1
 }
 
-# An init that ran and did not complete leaves an unusable index behind;
-# keeping it would pin every later spawn on this pooled worktree to syncing a
-# baseline that never existed. Only an init that actually executed may discard,
-# because an index CodeGraph never touched is still whatever it already was.
+# CodeGraph treats any existing codegraph.db as initialized, including partial,
+# indexing, and failed databases, so init would otherwise exit successfully
+# without repairing them. Once tool and timeout-runner preflight succeeds, init
+# discards the incomplete directory before execution; failed and timed-out init
+# discard it again in case the attempted rebuild wrote a new partial database.
+# A missing runner returns before this helper is called and preserves the index.
 # Removal is confined to the isolated task worktree and is itself fail-open -
 # it never blocks dispatch.
 discard_incomplete_codegraph_index() {  # <worktree>
@@ -858,13 +903,13 @@ discard_incomplete_codegraph_index() {  # <worktree>
 }
 
 index_task_worktree() {
-  local action success_status rc
+  local action success_status rc deadline_seconds
   CODEGRAPH_STATUS=skipped-not-ignored
   if [ "$KIND" = secondmate ]; then
     CODEGRAPH_STATUS=skipped-non-task
     return 0
   fi
-  if ! git -C "$WT" check-ignore -q .codegraph; then
+  if ! git -C "$WT" check-ignore -q .codegraph/; then
     return 0
   fi
   if ! command -v codegraph >/dev/null 2>&1; then
@@ -877,14 +922,16 @@ index_task_worktree() {
     echo "warning: CodeGraph init skipped for task $ID because no timeout runner is available; spawn will continue" >&2
     return 0
   fi
-  if codegraph_index_is_complete "$WT"; then
+  deadline_seconds=$((SECONDS + CODEGRAPH_TOTAL_TIMEOUT_SECONDS))
+  if codegraph_index_is_complete "$WT" "$deadline_seconds"; then
     action=sync
     success_status=synced
   else
     action=init
     success_status=initialized
   fi
-  if run_codegraph_bounded 30 "$action" "$WT" >/dev/null 2>&1; then
+  [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"
+  if run_codegraph_bounded "$deadline_seconds" "$action" "$WT" >/dev/null 2>&1; then
     CODEGRAPH_STATUS=$success_status
     return 0
   else
@@ -894,11 +941,7 @@ index_task_worktree() {
     124)
       [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"
       CODEGRAPH_STATUS="${action}-timeout"
-      echo "warning: CodeGraph $action timed out after 30s for task $ID; spawn will continue" >&2
-      ;;
-    125)
-      CODEGRAPH_STATUS="${action}-unavailable"
-      echo "warning: CodeGraph $action skipped for task $ID because no timeout runner is available; spawn will continue" >&2
+      echo "warning: CodeGraph $action timed out after ${CODEGRAPH_TOTAL_TIMEOUT_SECONDS}s for task $ID; spawn will continue" >&2
       ;;
     *)
       [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"

@@ -14,7 +14,9 @@ TMP_ROOT=$(fm_test_tmproot fm-spawn-codegraph)
 
 # <name> <ignores-.codegraph> <existing-index>, where existing-index is one of:
 #   none     - no .codegraph directory at all
-#   partial  - a .codegraph directory with no completed-index marker
+#   partial  - an initialized database whose state marker reports partial
+#   indexing - an initialized database whose state marker reports indexing
+#   failed   - an initialized database whose state marker reports failed
 #   complete - a .codegraph directory whose CodeGraph marker reports complete
 make_case() {
   local name=$1 ignored=$2 existing=$3 case_dir home proj wt fakebin state
@@ -30,15 +32,23 @@ make_case() {
   touch "$home/state/.last-watcher-beat"
   fm_git_init_commit "$proj"
   if [ "$ignored" = yes ]; then
-    printf '.codegraph\n' > "$proj/.gitignore"
+    printf '.codegraph/\n' > "$proj/.gitignore"
     git -C "$proj" add .gitignore
     git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm 'ignore codegraph'
   fi
   git -C "$proj" worktree add --quiet -b "fixture-$name" "$wt"
   state=absent
   case "$existing" in
-    partial) mkdir -p "$wt/.codegraph" ;;
-    complete) mkdir -p "$wt/.codegraph"; state=complete ;;
+    partial|indexing|failed)
+      mkdir -p "$wt/.codegraph"
+      printf 'old incomplete database\n' > "$wt/.codegraph/codegraph.db"
+      state=$existing
+      ;;
+    complete)
+      mkdir -p "$wt/.codegraph"
+      printf 'complete database\n' > "$wt/.codegraph/codegraph.db"
+      state=complete
+      ;;
   esac
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$id|$state"
 }
@@ -69,6 +79,10 @@ exit 0
 SH
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
+case "${1:-}" in
+  --kill-after=*) shift ;;
+  -k|--kill-after) shift 2 ;;
+esac
 shift
 case "${FM_FAKE_TIMEOUT_RESULT:-run}" in
   timeout) exit 124 ;;
@@ -79,21 +93,32 @@ SH
   cat > "$fakebin/codegraph" <<'SH'
 #!/usr/bin/env bash
 set -u
-printf '%s\n' "$*" >> "${FM_FAKE_CODEGRAPH_LOG:?}"
+printf 'dir=%s %s\n' "${CODEGRAPH_DIR:-unset}" "$*" >> "${FM_FAKE_CODEGRAPH_LOG:?}"
 if [ "${1:-}" = status ]; then
-  if [ "${FM_FAKE_CODEGRAPH_STATE:-absent}" = complete ]; then
-    printf '{"initialized":true,"index":{"state":"complete","pendingRefs":0}}\n'
-  else
-    printf '{"initialized":false,"lastIndexed":null}\n'
-  fi
+  case "${FM_FAKE_CODEGRAPH_STATE:-absent}" in
+    complete) printf '{"initialized":true,"index":{"state":"complete","pendingRefs":0}}\n' ;;
+    partial|indexing|failed) printf '{"initialized":true,"index":{"state":"%s","pendingRefs":0}}\n' "$FM_FAKE_CODEGRAPH_STATE" ;;
+    *) printf '{"initialized":false,"lastIndexed":null}\n' ;;
+  esac
   exit 0
 fi
 if [ "${1:-}" = init ]; then
-  mkdir -p "${2:?}/.codegraph"
+  index_dir="${2:?}/${CODEGRAPH_DIR:-.codegraph}"
+  if [ -f "$index_dir/codegraph.db" ]; then
+    exit 0
+  fi
+  mkdir -p "$index_dir"
+  printf 'replacement complete database\n' > "$index_dir/codegraph.db"
 fi
 if [ "${FM_FAKE_CODEGRAPH_RESULT:-ok}" = fail ]; then
   printf 'fake codegraph diagnostic that spawn must suppress\n' >&2
   exit 7
+fi
+if [ "${FM_FAKE_CODEGRAPH_RESULT:-ok}" = exit125 ]; then
+  exit 125
+fi
+if [ "${FM_FAKE_CODEGRAPH_RESULT:-ok}" = signal ]; then
+  exec perl -e 'kill 9, $$'
 fi
 exit 0
 SH
@@ -120,6 +145,7 @@ run_spawn() {
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
+    FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER="${FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER:-}" \
     FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" FM_FAKE_CODEGRAPH_RESULT="$result" \
     FM_FAKE_CODEGRAPH_STATE="$INDEX_STATE" \
     FM_FAKE_TIMEOUT_RESULT="$timeout_result" PATH="$FAKEBIN_DIR:${SPAWN_PATH:-$PATH}" \
@@ -135,24 +161,27 @@ test_ignored_absent_initializes() {
   status=$?
   expect_code 0 "$status" "ignored absent CodeGraph spawn should succeed"
   assert_contains "$out" "spawned $ID" "ignored absent spawn did not launch"
-  assert_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "ignored absent worktree did not run codegraph init"
+  assert_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "ignored absent worktree did not run codegraph init with the fixed index directory"
   assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "init outcome was not recorded in meta"
   pass "ignored worktree without an index runs CodeGraph init"
 }
 
-test_partial_index_initializes() {
-  local rec out status
-  rec=$(make_case partial yes partial)
-  read_case "$rec"
-  install_spawn_fakes "$FAKEBIN_DIR"
-  out=$(run_spawn)
-  status=$?
-  expect_code 0 "$status" "partial CodeGraph index spawn should succeed"
-  assert_contains "$out" "spawned $ID" "partial index spawn did not launch"
-  assert_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "partial index did not re-run codegraph init"
-  assert_no_grep "sync $WT_DIR" "$CASE_DIR/codegraph.log" "partial index was synced instead of re-initialized"
-  assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "init outcome was not recorded in meta"
-  pass "worktree with a .codegraph directory but no completed-index marker runs CodeGraph init"
+test_incomplete_databases_are_rebuilt() {
+  local incomplete rec out status
+  for incomplete in partial indexing failed; do
+    rec=$(make_case "rebuild-$incomplete" yes "$incomplete")
+    read_case "$rec"
+    install_spawn_fakes "$FAKEBIN_DIR"
+    out=$(run_spawn)
+    status=$?
+    expect_code 0 "$status" "$incomplete CodeGraph index spawn should succeed"
+    assert_contains "$out" "spawned $ID" "$incomplete index spawn did not launch"
+    assert_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "$incomplete index did not run codegraph init"
+    assert_no_grep "dir=.codegraph sync $WT_DIR" "$CASE_DIR/codegraph.log" "$incomplete index was synced instead of rebuilt"
+    assert_grep 'replacement complete database' "$WT_DIR/.codegraph/codegraph.db" "$incomplete index was left as CodeGraph's successful init no-op"
+    assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "$incomplete init outcome was not recorded in meta"
+  done
+  pass "partial, indexing, and failed databases are removed and genuinely rebuilt before init"
 }
 
 test_complete_index_syncs() {
@@ -164,8 +193,8 @@ test_complete_index_syncs() {
   status=$?
   expect_code 0 "$status" "complete CodeGraph index spawn should succeed"
   assert_contains "$out" "spawned $ID" "complete index spawn did not launch"
-  assert_grep "sync $WT_DIR" "$CASE_DIR/codegraph.log" "complete index did not run codegraph sync"
-  assert_no_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "complete index was re-initialized instead of synced"
+  assert_grep "dir=.codegraph sync $WT_DIR" "$CASE_DIR/codegraph.log" "complete index did not run codegraph sync"
+  assert_no_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "complete index was re-initialized instead of synced"
   assert_grep 'codegraph=synced' "$HOME_DIR/state/$ID.meta" "sync outcome was not recorded in meta"
   pass "worktree with a completed-index marker runs CodeGraph sync"
 }
@@ -184,6 +213,47 @@ test_not_ignored_skips() {
   pass "worktree that does not ignore .codegraph skips indexing"
 }
 
+test_unrelated_repository_is_refused_before_codegraph() {
+  local rec unrelated out status
+  rec=$(make_case unrelated-repository yes none)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  unrelated="$CASE_DIR/unrelated-repository"
+  fm_git_init_commit "$unrelated"
+  printf '.codegraph/\n' > "$unrelated/.gitignore"
+  git -C "$unrelated" add .gitignore
+  git -C "$unrelated" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm 'ignore codegraph'
+  mkdir -p "$unrelated/.codegraph"
+  printf 'preserve me\n' > "$unrelated/.codegraph/sentinel"
+  WT_DIR=$unrelated
+  out=$(run_spawn)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn accepted a stable worktree path from an unrelated repository"
+  assert_contains "$out" "does not belong to selected repository" "unrelated-repository refusal did not explain the identity mismatch"
+  assert_absent "$CASE_DIR/codegraph.log" "unrelated repository invoked CodeGraph before repository identity was established"
+  assert_grep 'preserve me' "$unrelated/.codegraph/sentinel" "unrelated repository's CodeGraph index was changed or discarded"
+  pass "an unrelated repository is refused before CodeGraph can inspect or mutate its index"
+}
+
+test_ambient_codegraph_dir_is_forced_and_worktree_stays_clean() {
+  local rec out status dirty
+  rec=$(make_case forced-directory yes none)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  out=$(CODEGRAPH_DIR=.codegraph-win run_spawn)
+  status=$?
+  expect_code 0 "$status" "ambient CODEGRAPH_DIR must not block spawn"
+  assert_contains "$out" "spawned $ID" "ambient CODEGRAPH_DIR prevented launch"
+  assert_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "CodeGraph call site did not force CODEGRAPH_DIR=.codegraph"
+  assert_absent "$WT_DIR/.codegraph-win" "ambient CODEGRAPH_DIR created an unguarded alternate index"
+  dirty=$(git -C "$WT_DIR" status --porcelain)
+  [ -z "$dirty" ] || fail "ambient CODEGRAPH_DIR left the spawned worktree dirty and ineligible for teardown: $dirty"
+  git -C "$PROJ_DIR" merge-base --is-ancestor "$(git -C "$WT_DIR" rev-parse HEAD)" HEAD || \
+    fail "forced-directory fixture was clean but still held unlanded work"
+  assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "forced-directory init outcome was not recorded in meta"
+  pass "every CodeGraph call forces .codegraph and leaves the task worktree clean and teardown-eligible"
+}
+
 test_nonzero_fails_open() {
   local rec out status warning_count attempts
   rec=$(make_case failure yes none)
@@ -199,7 +269,7 @@ test_nonzero_fails_open() {
   [ "$warning_count" -eq 1 ] || fail "CodeGraph failure printed $warning_count warnings instead of one"
   assert_grep 'codegraph=init-failed' "$HOME_DIR/state/$ID.meta" "failure outcome was not recorded in meta"
   [ ! -e "$WT_DIR/.codegraph" ] || fail "failed CodeGraph init left an unusable index behind"
-  attempts=$(grep -c "^init $WT_DIR" "$CASE_DIR/codegraph.log")
+  attempts=$(grep -c "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log")
   [ "$attempts" -eq 1 ] || fail "failed CodeGraph init was attempted $attempts times instead of once"
   pass "CodeGraph non-zero exit warns once, records failure, discards the partial index, does not retry, and fails open"
 }
@@ -219,21 +289,102 @@ test_timeout_fails_open() {
   pass "CodeGraph timeout warns, records timeout, discards the partial index, and fails open"
 }
 
-test_no_timeout_runner_preserves_index() {
-  local rec out status warning_count
-  rec=$(make_case norunner yes complete)
+test_term_ignoring_codegraph_is_killed_within_one_total_deadline() {
+  local rec out status warning_count status_budget action_budget real_timeout
+  rec=$(make_case stubborn-timeout yes none)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
-  out=$(run_spawn ok unavailable)
+  real_timeout=$(command -v timeout)
+  cat > "$FAKEBIN_DIR/timeout" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${FM_FAKE_TIMEOUT_LOG:?}"
+case "${1:-}" in
+  --kill-after=*) shift ;;
+  -k|--kill-after) shift 2 ;;
+  *) exit 98 ;;
+esac
+budget=${1%s}
+shift
+printf '%s\n' "$budget" >> "${FM_FAKE_TIMEOUT_BUDGET_LOG:?}"
+case " $* " in
+  *" codegraph status "*) sleep 2; exec "$@" ;;
+esac
+"${FM_REAL_TIMEOUT:?}" --kill-after=1s 1s "$@"
+rc=$?
+case "$rc" in
+  124|137) exit 124 ;;
+  *) exit "$rc" ;;
+esac
+SH
+  chmod +x "$FAKEBIN_DIR/timeout"
+  cat > "$FAKEBIN_DIR/codegraph" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'dir=%s %s\n' "${CODEGRAPH_DIR:-unset}" "$*" >> "${FM_FAKE_CODEGRAPH_LOG:?}"
+if [ "${1:-}" = status ]; then
+  printf '{"initialized":false,"lastIndexed":null}\n'
+  exit 0
+fi
+mkdir -p "${2:?}/${CODEGRAPH_DIR:-.codegraph}"
+trap '' TERM
+while :; do sleep 1; done
+SH
+  chmod +x "$FAKEBIN_DIR/codegraph"
+  out=$(FM_FAKE_TIMEOUT_LOG="$CASE_DIR/timeout.log" \
+    FM_FAKE_TIMEOUT_BUDGET_LOG="$CASE_DIR/timeout-budgets.log" \
+    FM_REAL_TIMEOUT="$real_timeout" "$real_timeout" --kill-after=1s 8s \
+    env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+      FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+      FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+      FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
+      FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" \
+      PATH="$FAKEBIN_DIR:$PATH" "$SPAWN" "$ID" "$PROJ_DIR" 2>&1)
   status=$?
-  expect_code 0 "$status" "missing timeout runner must not block spawn"
-  assert_contains "$out" "spawned $ID" "missing timeout runner prevented launch"
-  assert_contains "$out" "warning: CodeGraph init skipped for task $ID because no timeout runner is available; spawn will continue" "missing timeout runner warning was unclear"
+  expect_code 0 "$status" "independent watchdog should observe spawn complete after CodeGraph ignores TERM"
+  assert_contains "$out" "spawned $ID" "TERM-ignoring CodeGraph prevented harness launch"
+  assert_contains "$out" "warning: CodeGraph init timed out after 30s for task $ID; spawn will continue" "TERM-ignoring CodeGraph did not report the bounded timeout"
   warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
-  [ "$warning_count" -eq 1 ] || fail "missing timeout runner printed $warning_count warnings instead of one"
-  assert_grep 'codegraph=init-unavailable' "$HOME_DIR/state/$ID.meta" "unavailable outcome was not recorded in meta"
-  assert_present "$WT_DIR/.codegraph" "missing timeout runner destroyed an index CodeGraph never ran against"
-  pass "no timeout runner leaves the existing index untouched, warns once, and fails open"
+  [ "$warning_count" -eq 1 ] || fail "TERM-ignoring CodeGraph printed $warning_count warnings instead of one"
+  assert_grep 'codegraph=init-timeout' "$HOME_DIR/state/$ID.meta" "TERM-ignoring timeout was not recorded in meta"
+  assert_absent "$WT_DIR/.codegraph" "TERM-ignoring timed-out init left a partial index behind"
+  status_budget=$(sed -n '1p' "$CASE_DIR/timeout-budgets.log")
+  action_budget=$(sed -n '2p' "$CASE_DIR/timeout-budgets.log")
+  [ "$action_budget" -lt "$status_budget" ] || fail "status and action received separate timeout budgets instead of one decreasing deadline ($status_budget then $action_budget)"
+  pass "a TERM-ignoring CodeGraph process is killed, recorded, and bypassed within one decreasing total deadline"
+}
+
+test_executed_exit_125_is_failure_and_cleans_index() {
+  local rec out status warning_count
+  rec=$(make_case exit-125 yes partial)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  out=$(run_spawn exit125)
+  status=$?
+  expect_code 0 "$status" "executed CodeGraph exit 125 must not block spawn"
+  assert_contains "$out" "spawned $ID" "executed CodeGraph exit 125 prevented launch"
+  assert_contains "$out" "warning: CodeGraph init failed for task $ID with exit 125; spawn will continue" "executed exit 125 was confused with missing timeout-runner preflight"
+  warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
+  [ "$warning_count" -eq 1 ] || fail "executed exit 125 printed $warning_count warnings instead of one"
+  assert_grep 'codegraph=init-failed' "$HOME_DIR/state/$ID.meta" "executed exit 125 was not recorded as failure"
+  assert_absent "$WT_DIR/.codegraph" "executed exit 125 left its partial replacement index behind"
+  assert_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "exit-125 regression did not execute CodeGraph init"
+  pass "an executed CodeGraph exit 125 is a failure, not a no-runner result, and cleans its partial index"
+}
+
+test_perl_runner_reports_signal_failure() {
+  local rec out status
+  rec=$(make_case perl-signal yes none)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  out=$(FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER=perl run_spawn signal)
+  status=$?
+  expect_code 0 "$status" "signal-killed CodeGraph under Perl must fail open"
+  assert_contains "$out" "spawned $ID" "Perl runner signal handling prevented launch"
+  assert_contains "$out" "warning: CodeGraph init failed for task $ID with exit 137; spawn will continue" "Perl runner discarded the child signal bits"
+  assert_grep 'codegraph=init-failed' "$HOME_DIR/state/$ID.meta" "Perl signal failure was not recorded in meta"
+  assert_absent "$WT_DIR/.codegraph" "Perl signal failure left a partial index behind"
+  pass "the Perl timeout fallback converts a signal-killed CodeGraph child into failure and cleans its index"
 }
 
 test_scout_worktree_initializes() {
@@ -246,7 +397,7 @@ test_scout_worktree_initializes() {
   expect_code 0 "$status" "scout CodeGraph spawn should succeed"
   assert_contains "$out" "spawned $ID" "scout spawn did not launch"
   assert_grep 'kind=scout' "$HOME_DIR/state/$ID.meta" "scout spawn did not record kind=scout"
-  assert_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "scout worktree did not run codegraph init"
+  assert_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "scout worktree did not run codegraph init"
   assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "scout init outcome was not recorded in meta"
   pass "scout worktree without an index runs CodeGraph init"
 }
@@ -271,12 +422,16 @@ test_missing_binary_fails_open() {
 }
 
 test_ignored_absent_initializes
-test_partial_index_initializes
+test_incomplete_databases_are_rebuilt
 test_complete_index_syncs
 test_not_ignored_skips
+test_unrelated_repository_is_refused_before_codegraph
+test_ambient_codegraph_dir_is_forced_and_worktree_stays_clean
 test_nonzero_fails_open
 test_timeout_fails_open
-test_no_timeout_runner_preserves_index
+test_term_ignoring_codegraph_is_killed_within_one_total_deadline
+test_executed_exit_125_is_failure_and_cleans_index
+test_perl_runner_reports_signal_failure
 test_scout_worktree_initializes
 test_missing_binary_fails_open
 
