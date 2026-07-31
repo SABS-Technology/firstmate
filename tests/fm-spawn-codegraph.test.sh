@@ -70,9 +70,10 @@ SH
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
 shift
-if [ "${FM_FAKE_TIMEOUT_RESULT:-run}" = timeout ]; then
-  exit 124
-fi
+case "${FM_FAKE_TIMEOUT_RESULT:-run}" in
+  timeout) exit 124 ;;
+  unavailable) exit 125 ;;
+esac
 exec "$@"
 SH
   cat > "$fakebin/codegraph" <<'SH'
@@ -202,11 +203,29 @@ test_timeout_fails_open() {
   pass "CodeGraph timeout warns, records timeout, discards the partial index, and fails open"
 }
 
+test_no_timeout_runner_preserves_index() {
+  local rec out status warning_count
+  rec=$(make_case norunner yes complete)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  out=$(run_spawn ok unavailable)
+  status=$?
+  expect_code 0 "$status" "missing timeout runner must not block spawn"
+  assert_contains "$out" "spawned $ID" "missing timeout runner prevented launch"
+  assert_contains "$out" "warning: CodeGraph init skipped for task $ID because no timeout runner is available; spawn will continue" "missing timeout runner warning was unclear"
+  warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
+  [ "$warning_count" -eq 1 ] || fail "missing timeout runner printed $warning_count warnings instead of one"
+  assert_grep 'codegraph=init-unavailable' "$HOME_DIR/state/$ID.meta" "unavailable outcome was not recorded in meta"
+  assert_present "$WT_DIR/.codegraph" "missing timeout runner destroyed an index CodeGraph never ran against"
+  pass "no timeout runner leaves the existing index untouched, warns once, and fails open"
+}
+
 test_ignored_absent_initializes
 test_partial_index_initializes
 test_complete_index_syncs
 test_not_ignored_skips
 test_nonzero_fails_open
 test_timeout_fails_open
+test_no_timeout_runner_preserves_index
 
 echo "# all fm-spawn CodeGraph tests passed"

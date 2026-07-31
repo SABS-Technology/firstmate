@@ -834,10 +834,18 @@ codegraph_index_is_complete() {  # <worktree>
   printf '%s' "$probe" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"complete"'
 }
 
-# An init that did not complete leaves an unusable index behind; keeping it
-# would pin every later spawn on this pooled worktree to syncing a baseline
-# that never existed. Removal is confined to the isolated task worktree and is
-# itself fail-open - it never blocks dispatch.
+codegraph_timeout_runner_available() {
+  command -v timeout >/dev/null 2>&1 ||
+    command -v gtimeout >/dev/null 2>&1 ||
+    command -v perl >/dev/null 2>&1
+}
+
+# An init that ran and did not complete leaves an unusable index behind;
+# keeping it would pin every later spawn on this pooled worktree to syncing a
+# baseline that never existed. Only an init that actually executed may discard,
+# because an index CodeGraph never touched is still whatever it already was.
+# Removal is confined to the isolated task worktree and is itself fail-open -
+# it never blocks dispatch.
 discard_incomplete_codegraph_index() {  # <worktree>
   local worktree=$1 worktree_real
   [ -n "$worktree" ] || return 0
@@ -864,6 +872,11 @@ index_task_worktree() {
     echo "warning: CodeGraph init skipped for task $ID because codegraph is unavailable; spawn will continue" >&2
     return 0
   fi
+  if ! codegraph_timeout_runner_available; then
+    CODEGRAPH_STATUS=init-unavailable
+    echo "warning: CodeGraph init skipped for task $ID because no timeout runner is available; spawn will continue" >&2
+    return 0
+  fi
   if codegraph_index_is_complete "$WT"; then
     action=sync
     success_status=synced
@@ -877,11 +890,9 @@ index_task_worktree() {
   else
     rc=$?
   fi
-  if [ "$action" = init ]; then
-    discard_incomplete_codegraph_index "$WT"
-  fi
   case "$rc" in
     124)
+      [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"
       CODEGRAPH_STATUS="${action}-timeout"
       echo "warning: CodeGraph $action timed out after 30s for task $ID; spawn will continue" >&2
       ;;
@@ -890,6 +901,7 @@ index_task_worktree() {
       echo "warning: CodeGraph $action skipped for task $ID because no timeout runner is available; spawn will continue" >&2
       ;;
     *)
+      [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"
       CODEGRAPH_STATUS="${action}-failed"
       echo "warning: CodeGraph $action failed for task $ID with exit $rc; spawn will continue" >&2
       ;;
