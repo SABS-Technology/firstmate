@@ -111,7 +111,9 @@ For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved tas
 Once that isolation check passes, the same spawn prepares a CodeGraph index inside the task worktree so the crewmate starts on a current index instead of paying for one mid-task: a pooled worktree that already carries a completed index is synced, and any other state is initialized from scratch.
 The step runs only when that worktree's git already ignores `.codegraph/`, and every CodeGraph subprocess is forced to use that literal directory so an ambient override cannot bypass the teardown-safety boundary.
 Firstmate never adds that ignore rule for you, and the work stays inside the isolated task worktree.
-Indexing is an optimization, never a prerequisite: a missing `codegraph`, a missing timeout runner, a non-zero exit, or the shared 30-second status-plus-action deadline each print one warning, record the outcome in the task's `codegraph=` metadata, and let the launch proceed.
+Indexing is an optimization, never a prerequisite: a missing `codegraph`, a missing timeout runner, a non-zero exit, or the deadline each print one warning, record the outcome in the task's `codegraph=` metadata, and let the launch proceed.
+That deadline is one 30-second bound shared by the whole preparation phase - status probe, incomplete-index cleanup, and init or sync - escalated TERM-then-KILL by a watchdog outside the phase, so a step that ignores TERM still cannot hold up dispatch.
+When cleanup of an incomplete index cannot finish, init is skipped rather than run against that index, and the recorded outcome names the cleanup failure.
 The exact statuses and the sync-versus-init decision are owned by `bin/fm-spawn.sh`'s header and inline comments.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
