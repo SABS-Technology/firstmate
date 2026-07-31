@@ -83,8 +83,9 @@
 #   linked worktree of the selected repository, distinct from its primary checkout.
 #   After that isolation check, ship/scout spawns initialize or sync CodeGraph
 #   only when .codegraph/ is git-ignored in the task worktree.
-#   CodeGraph status plus action share one 30-second TERM-then-KILL deadline and
-#   always fail open with one warning.
+#   The entire CodeGraph preparation phase - status, cleanup, and init or sync -
+#   shares one 30-second TERM-then-KILL deadline and always fails open with one
+#   warning.
 #   The codegraph= metadata field records whether the worktree was initialized,
 #   synced, skipped, timed out, or encountered an error before launch.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
@@ -824,19 +825,22 @@ validate_spawn_worktree() {  # <source> <inspect-target>
 
 CODEGRAPH_TOTAL_TIMEOUT_SECONDS=30
 CODEGRAPH_KILL_GRACE_SECONDS=1
+CODEGRAPH_CLEANUP_RESERVE_SECONDS=2
+if [ "${FM_SPAWN_NO_GUARD:-0}" = 1 ]; then
+  case "${FM_SPAWN_TEST_CODEGRAPH_TOTAL_TIMEOUT_SECONDS:-}" in
+    ''|*[!0-9]*) ;;
+    *) CODEGRAPH_TOTAL_TIMEOUT_SECONDS=$FM_SPAWN_TEST_CODEGRAPH_TOTAL_TIMEOUT_SECONDS ;;
+  esac
+fi
 
-run_codegraph_bounded() {  # <deadline-seconds> <codegraph-args...>
-  local deadline_seconds=$1 timeout_seconds rc
-  local CODEGRAPH_DIR=.codegraph
-  export CODEGRAPH_DIR
+run_codegraph_timed_command() {  # <term-after-seconds> <command...>
+  local timeout_seconds=$1 rc
   shift
-  timeout_seconds=$((deadline_seconds - SECONDS - CODEGRAPH_KILL_GRACE_SECONDS))
-  [ "$timeout_seconds" -gt 0 ] || return 124
   if [ "${FM_SPAWN_NO_GUARD:-0}" = 1 ] && [ "${FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER:-}" = perl ]; then
     perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $s = $?; alarm 0; exit(($s & 127) ? 128 + ($s & 127) : $s >> 8)' \
-      "$timeout_seconds" codegraph "$@"
+      "$timeout_seconds" "$@"
   elif command -v timeout >/dev/null 2>&1; then
-    if timeout --kill-after="${CODEGRAPH_KILL_GRACE_SECONDS}s" "${timeout_seconds}s" codegraph "$@"; then
+    if timeout --kill-after="${CODEGRAPH_KILL_GRACE_SECONDS}s" "${timeout_seconds}s" "$@"; then
       return 0
     else
       rc=$?
@@ -844,7 +848,7 @@ run_codegraph_bounded() {  # <deadline-seconds> <codegraph-args...>
     [ "$rc" -ne 137 ] || return 124
     return "$rc"
   elif command -v gtimeout >/dev/null 2>&1; then
-    if gtimeout --kill-after="${CODEGRAPH_KILL_GRACE_SECONDS}s" "${timeout_seconds}s" codegraph "$@"; then
+    if gtimeout --kill-after="${CODEGRAPH_KILL_GRACE_SECONDS}s" "${timeout_seconds}s" "$@"; then
       return 0
     else
       rc=$?
@@ -853,10 +857,26 @@ run_codegraph_bounded() {  # <deadline-seconds> <codegraph-args...>
     return "$rc"
   elif command -v perl >/dev/null 2>&1; then
     perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $s = $?; alarm 0; exit(($s & 127) ? 128 + ($s & 127) : $s >> 8)' \
-      "$timeout_seconds" codegraph "$@"
+      "$timeout_seconds" "$@"
   else
     return 125
   fi
+}
+
+run_codegraph_external_bounded() {  # <deadline-seconds> <reserve-seconds> <command...>
+  local deadline_seconds=$1 reserve_seconds=$2 timeout_seconds
+  shift 2
+  timeout_seconds=$((deadline_seconds - SECONDS - CODEGRAPH_KILL_GRACE_SECONDS - reserve_seconds))
+  [ "$timeout_seconds" -gt 0 ] || return 124
+  run_codegraph_timed_command "$timeout_seconds" "$@"
+}
+
+run_codegraph_phase_timed_command() {  # <term-after-seconds> <command...>
+  local timeout_seconds=$1
+  shift
+  command -v perl >/dev/null 2>&1 || return 125
+  perl -e 'my $t = shift; my $g = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, $g; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $s = $?; alarm 0; exit(($s & 127) ? 128 + ($s & 127) : $s >> 8)' \
+    "$timeout_seconds" "$CODEGRAPH_KILL_GRACE_SECONDS" "$@"
 }
 
 # Directory existence is never proof of a usable index: a pooled worktree can
@@ -867,20 +887,19 @@ run_codegraph_bounded() {  # <deadline-seconds> <codegraph-args...>
 # `index.state`. Only that positive proof selects sync; anything else - probe
 # failure, missing marker, older CLI that does not report it - selects init.
 codegraph_index_is_complete() {  # <worktree> <deadline-seconds>
-  local worktree=$1 deadline_seconds=$2 probe
-  probe=$(run_codegraph_bounded "$deadline_seconds" status --json "$worktree" 2>/dev/null) || return 1
+  local worktree=$1 deadline_seconds=$2 probe rc
+  if probe=$(run_codegraph_external_bounded "$deadline_seconds" 0 codegraph status --json "$worktree" 2>/dev/null); then
+    :
+  else
+    rc=$?
+    return "$rc"
+  fi
   printf '%s' "$probe" | grep -Eq '"initialized"[[:space:]]*:[[:space:]]*true' || return 1
   printf '%s' "$probe" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"complete"'
 }
 
 codegraph_timeout_runner_available() {
-  if [ "${FM_SPAWN_NO_GUARD:-0}" = 1 ] && [ "${FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER:-}" = perl ]; then
-    command -v perl >/dev/null 2>&1
-    return
-  fi
-  command -v timeout >/dev/null 2>&1 ||
-    command -v gtimeout >/dev/null 2>&1 ||
-    command -v perl >/dev/null 2>&1
+  command -v perl >/dev/null 2>&1
 }
 
 # CodeGraph treats any existing codegraph.db as initialized, including partial,
@@ -889,21 +908,87 @@ codegraph_timeout_runner_available() {
 # discards the incomplete directory before execution; failed and timed-out init
 # discard it again in case the attempted rebuild wrote a new partial database.
 # A missing runner returns before this helper is called and preserves the index.
-# Removal is confined to the isolated task worktree and is itself fail-open -
-# it never blocks dispatch.
-discard_incomplete_codegraph_index() {  # <worktree>
-  local worktree=$1 worktree_real
+# Removal is confined to the isolated task worktree. The whole preparation phase
+# is deadline-enforced around this helper, so removal cannot block dispatch.
+discard_incomplete_codegraph_index() {  # <worktree> <deadline-seconds>
+  local worktree=$1 deadline_seconds=$2 worktree_real
   [ -n "$worktree" ] || return 0
   worktree_real=$(cd "$worktree" 2>/dev/null && pwd -P) || return 0
   [ -n "$worktree_real" ] || return 0
   [ "$worktree_real" != "$PROJ_ABS_REAL" ] || return 0
   [ -d "$worktree_real/.codegraph" ] || return 0
-  rm -rf "$worktree_real/.codegraph" 2>/dev/null || true
-  return 0
+  run_codegraph_external_bounded "$deadline_seconds" 0 rm -rf "$worktree_real/.codegraph" 2>/dev/null
+}
+
+codegraph_preparation_phase() {  # <worktree>
+  local worktree=$1 action success_status rc deadline_seconds reserve_seconds result
+  local CODEGRAPH_DIR=.codegraph
+  export CODEGRAPH_DIR
+  deadline_seconds=$((SECONDS + CODEGRAPH_TOTAL_TIMEOUT_SECONDS))
+  printf 'operation=status\n'
+  if codegraph_index_is_complete "$worktree" "$deadline_seconds"; then
+    action=sync
+    success_status=synced
+  else
+    rc=$?
+    if [ "$rc" -eq 124 ] && [ $((deadline_seconds - SECONDS)) -le "$CODEGRAPH_KILL_GRACE_SECONDS" ]; then
+      printf 'result=status-timeout\nresult_rc=124\n'
+      return 0
+    fi
+    action=init
+    success_status=initialized
+  fi
+  if [ "$action" = init ]; then
+    printf 'cleanup_context=pre-init\noperation=cleanup\n'
+    if discard_incomplete_codegraph_index "$worktree" "$deadline_seconds"; then
+      :
+    else
+      rc=$?
+      result=cleanup-failed
+      [ "$rc" -ne 124 ] || result=cleanup-timeout
+      printf 'result=%s\nresult_rc=%s\n' "$result" "$rc"
+      return 0
+    fi
+  fi
+  printf 'operation=%s\n' "$action"
+  reserve_seconds=0
+  [ "$action" != init ] || reserve_seconds=$CODEGRAPH_CLEANUP_RESERVE_SECONDS
+  if run_codegraph_external_bounded "$deadline_seconds" "$reserve_seconds" codegraph "$action" "$worktree" >/dev/null 2>&1; then
+    printf 'result=%s\nresult_rc=0\n' "$success_status"
+    return 0
+  else
+    rc=$?
+  fi
+  result="${action}-failed"
+  [ "$rc" -ne 124 ] || result="${action}-timeout"
+  if [ "$action" = init ]; then
+    printf 'cleanup_context=post-init\noperation=cleanup\n'
+    if discard_incomplete_codegraph_index "$worktree" "$deadline_seconds"; then
+      :
+    else
+      rc=$?
+      result=cleanup-failed
+      [ "$rc" -ne 124 ] || result=cleanup-timeout
+    fi
+  fi
+  printf 'result=%s\nresult_rc=%s\n' "$result" "$rc"
+}
+
+run_codegraph_preparation_bounded() {  # <worktree>
+  local worktree=$1 timeout_seconds
+  timeout_seconds=$((CODEGRAPH_TOTAL_TIMEOUT_SECONDS - CODEGRAPH_KILL_GRACE_SECONDS))
+  [ "$timeout_seconds" -gt 0 ] || return 124
+  (
+    export CODEGRAPH_TOTAL_TIMEOUT_SECONDS CODEGRAPH_KILL_GRACE_SECONDS CODEGRAPH_CLEANUP_RESERVE_SECONDS
+    export FM_SPAWN_NO_GUARD FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER PROJ_ABS_REAL
+    export -f run_codegraph_timed_command run_codegraph_external_bounded run_codegraph_phase_timed_command
+    export -f codegraph_index_is_complete discard_incomplete_codegraph_index codegraph_preparation_phase
+    run_codegraph_phase_timed_command "$timeout_seconds" bash -c "codegraph_preparation_phase \"\$1\"" _ "$worktree"
+  )
 }
 
 index_task_worktree() {
-  local action success_status rc deadline_seconds
+  local phase_output phase_rc=0 operation=preparation cleanup_context='' result='' result_rc=1 key value
   CODEGRAPH_STATUS=skipped-not-ignored
   if [ "$KIND" = secondmate ]; then
     CODEGRAPH_STATUS=skipped-non-task
@@ -922,31 +1007,58 @@ index_task_worktree() {
     echo "warning: CodeGraph init skipped for task $ID because no timeout runner is available; spawn will continue" >&2
     return 0
   fi
-  deadline_seconds=$((SECONDS + CODEGRAPH_TOTAL_TIMEOUT_SECONDS))
-  if codegraph_index_is_complete "$WT" "$deadline_seconds"; then
-    action=sync
-    success_status=synced
+  if phase_output=$(run_codegraph_preparation_bounded "$WT"); then
+    :
   else
-    action=init
-    success_status=initialized
+    phase_rc=$?
   fi
-  [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"
-  if run_codegraph_bounded "$deadline_seconds" "$action" "$WT" >/dev/null 2>&1; then
-    CODEGRAPH_STATUS=$success_status
+  while IFS='=' read -r key value; do
+    case "$key" in
+      operation) operation=$value ;;
+      cleanup_context) cleanup_context=$value ;;
+      result) result=$value ;;
+      result_rc) result_rc=$value ;;
+    esac
+  done <<EOF
+$phase_output
+EOF
+  if [ "$phase_rc" -eq 124 ]; then
+    CODEGRAPH_STATUS="${operation}-timeout"
+    if [ "$operation" = cleanup ] && [ "$cleanup_context" = pre-init ]; then
+      echo "warning: CodeGraph cleanup timed out after ${CODEGRAPH_TOTAL_TIMEOUT_SECONDS}s for task $ID; init skipped and spawn will continue" >&2
+    else
+      echo "warning: CodeGraph $operation timed out after ${CODEGRAPH_TOTAL_TIMEOUT_SECONDS}s for task $ID; spawn will continue" >&2
+    fi
     return 0
-  else
-    rc=$?
   fi
-  case "$rc" in
-    124)
-      [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"
-      CODEGRAPH_STATUS="${action}-timeout"
-      echo "warning: CodeGraph $action timed out after ${CODEGRAPH_TOTAL_TIMEOUT_SECONDS}s for task $ID; spawn will continue" >&2
+  if [ "$phase_rc" -ne 0 ]; then
+    CODEGRAPH_STATUS=preparation-failed
+    echo "warning: CodeGraph preparation failed for task $ID with exit $phase_rc; spawn will continue" >&2
+    return 0
+  fi
+  CODEGRAPH_STATUS=$result
+  case "$result" in
+    initialized|synced) ;;
+    cleanup-failed)
+      if [ "$cleanup_context" = pre-init ]; then
+        echo "warning: CodeGraph cleanup failed for task $ID with exit $result_rc; init skipped and spawn will continue" >&2
+      else
+        echo "warning: CodeGraph cleanup failed for task $ID with exit $result_rc; spawn will continue" >&2
+      fi
+      ;;
+    *-timeout)
+      if [ "$result" = cleanup-timeout ] && [ "$cleanup_context" = pre-init ]; then
+        echo "warning: CodeGraph cleanup timed out after ${CODEGRAPH_TOTAL_TIMEOUT_SECONDS}s for task $ID; init skipped and spawn will continue" >&2
+      else
+        echo "warning: CodeGraph ${result%-timeout} timed out after ${CODEGRAPH_TOTAL_TIMEOUT_SECONDS}s for task $ID; spawn will continue" >&2
+      fi
+      ;;
+    *-failed)
+      echo "warning: CodeGraph ${result%-failed} failed for task $ID with exit $result_rc; spawn will continue" >&2
       ;;
     *)
-      [ "$action" != init ] || discard_incomplete_codegraph_index "$WT"
-      CODEGRAPH_STATUS="${action}-failed"
-      echo "warning: CodeGraph $action failed for task $ID with exit $rc; spawn will continue" >&2
+      CODEGRAPH_STATUS=preparation-failed
+      echo "warning: CodeGraph preparation returned no usable outcome for task $ID; spawn will continue" >&2
       ;;
   esac
   return 0

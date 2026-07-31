@@ -85,7 +85,9 @@ case "${1:-}" in
 esac
 shift
 case "${FM_FAKE_TIMEOUT_RESULT:-run}" in
-  timeout) exit 124 ;;
+  timeout)
+    [ "${1##*/}" != codegraph ] || exit 124
+    ;;
   unavailable) exit 125 ;;
 esac
 exec "$@"
@@ -289,69 +291,99 @@ test_timeout_fails_open() {
   pass "CodeGraph timeout warns, records timeout, discards the partial index, and fails open"
 }
 
-test_term_ignoring_codegraph_is_killed_within_one_total_deadline() {
-  local rec out status warning_count status_budget action_budget real_timeout
-  rec=$(make_case stubborn-timeout yes none)
+test_term_ignoring_cleanup_is_killed_and_spawn_continues() {
+  local rec out status warning_count real_timeout real_rm
+  rec=$(make_case stubborn-cleanup yes partial)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
   real_timeout=$(command -v timeout)
+  real_rm=$(command -v rm)
   cat > "$FAKEBIN_DIR/timeout" <<'SH'
 #!/usr/bin/env bash
-set -u
-printf '%s\n' "$*" >> "${FM_FAKE_TIMEOUT_LOG:?}"
-case "${1:-}" in
-  --kill-after=*) shift ;;
-  -k|--kill-after) shift 2 ;;
-  *) exit 98 ;;
-esac
-budget=${1%s}
-shift
-printf '%s\n' "$budget" >> "${FM_FAKE_TIMEOUT_BUDGET_LOG:?}"
-case " $* " in
-  *" codegraph status "*) sleep 2; exec "$@" ;;
-esac
-"${FM_REAL_TIMEOUT:?}" --kill-after=1s 1s "$@"
-rc=$?
-case "$rc" in
-  124|137) exit 124 ;;
-  *) exit "$rc" ;;
-esac
+exec "${FM_REAL_TIMEOUT:?}" "$@"
 SH
-  chmod +x "$FAKEBIN_DIR/timeout"
-  cat > "$FAKEBIN_DIR/codegraph" <<'SH'
+  cat > "$FAKEBIN_DIR/rm" <<'SH'
 #!/usr/bin/env bash
 set -u
-printf 'dir=%s %s\n' "${CODEGRAPH_DIR:-unset}" "$*" >> "${FM_FAKE_CODEGRAPH_LOG:?}"
-if [ "${1:-}" = status ]; then
-  printf '{"initialized":false,"lastIndexed":null}\n'
-  exit 0
-fi
-mkdir -p "${2:?}/${CODEGRAPH_DIR:-.codegraph}"
-trap '' TERM
-while :; do sleep 1; done
+case " $* " in
+  *" /.codegraph "|*"/.codegraph "|*"/.codegraph")
+    printf '%s\n' "$*" >> "${FM_FAKE_RM_LOG:?}"
+    trap '' TERM
+    while :; do sleep 1; done
+    ;;
+esac
+exec "${FM_REAL_RM:?}" "$@"
 SH
-  chmod +x "$FAKEBIN_DIR/codegraph"
-  out=$(FM_FAKE_TIMEOUT_LOG="$CASE_DIR/timeout.log" \
-    FM_FAKE_TIMEOUT_BUDGET_LOG="$CASE_DIR/timeout-budgets.log" \
-    FM_REAL_TIMEOUT="$real_timeout" "$real_timeout" --kill-after=1s 8s \
+  chmod +x "$FAKEBIN_DIR/timeout" "$FAKEBIN_DIR/rm"
+  out=$(FM_REAL_TIMEOUT="$real_timeout" FM_REAL_RM="$real_rm" \
+    FM_FAKE_RM_LOG="$CASE_DIR/rm.log" "$real_timeout" --kill-after=1s 7s \
     env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
       FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
       FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
       FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
+      FM_SPAWN_TEST_CODEGRAPH_TOTAL_TIMEOUT_SECONDS=3 \
+      FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" \
+      FM_FAKE_CODEGRAPH_STATE="$INDEX_STATE" \
+      PATH="$FAKEBIN_DIR:$PATH" "$SPAWN" "$ID" "$PROJ_DIR" 2>&1)
+  status=$?
+  expect_code 0 "$status" "independent watchdog should observe spawn complete after cleanup ignores TERM"
+  assert_contains "$out" "spawned $ID" "TERM-ignoring cleanup prevented harness launch"
+  assert_contains "$out" "warning: CodeGraph cleanup timed out after 3s for task $ID; init skipped and spawn will continue" "TERM-ignoring cleanup did not report the bounded timeout"
+  warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
+  [ "$warning_count" -eq 1 ] || fail "TERM-ignoring cleanup printed $warning_count warnings instead of one"
+  assert_grep 'codegraph=cleanup-timeout' "$HOME_DIR/state/$ID.meta" "TERM-ignoring cleanup timeout was not recorded in meta"
+  assert_grep "dir=.codegraph status --json $WT_DIR" "$CASE_DIR/codegraph.log" "cleanup timeout regression did not enter the incomplete-index path"
+  assert_no_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "init ran after cleanup failed to finish"
+  assert_grep '/.codegraph' "$CASE_DIR/rm.log" "cleanup timeout regression did not invoke rm for the incomplete index"
+  pass "a TERM-ignoring cleanup is killed, recorded once, and bypassed without blocking spawn"
+}
+
+test_preparation_phase_bounds_any_stubborn_external_operation() {
+  local rec out status warning_count real_grep real_timeout
+  rec=$(make_case stubborn-status yes none)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  real_grep=$(command -v grep)
+  real_timeout=$(command -v timeout)
+  cat > "$FAKEBIN_DIR/timeout" <<'SH'
+#!/usr/bin/env bash
+exec "${FM_REAL_TIMEOUT:?}" "$@"
+SH
+  cat > "$FAKEBIN_DIR/codegraph" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'dir=%s %s\n' "${CODEGRAPH_DIR:-unset}" "$*" >> "${FM_FAKE_CODEGRAPH_LOG:?}"
+printf '{"initialized":true,"index":{"state":"complete","pendingRefs":0}}\n'
+SH
+  cat > "$FAKEBIN_DIR/grep" <<'SH'
+#!/usr/bin/env bash
+set -u
+case " $* " in
+  *initialized*)
+    trap '' TERM
+    while :; do sleep 1; done
+    ;;
+esac
+exec "${FM_REAL_GREP:?}" "$@"
+SH
+  chmod +x "$FAKEBIN_DIR/timeout" "$FAKEBIN_DIR/codegraph" "$FAKEBIN_DIR/grep"
+  out=$(FM_REAL_GREP="$real_grep" FM_REAL_TIMEOUT="$real_timeout" \
+    "$real_timeout" --kill-after=1s 7s \
+    env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+      FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+      FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+      FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
+      FM_SPAWN_TEST_CODEGRAPH_TOTAL_TIMEOUT_SECONDS=3 \
       FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" \
       PATH="$FAKEBIN_DIR:$PATH" "$SPAWN" "$ID" "$PROJ_DIR" 2>&1)
   status=$?
-  expect_code 0 "$status" "independent watchdog should observe spawn complete after CodeGraph ignores TERM"
-  assert_contains "$out" "spawned $ID" "TERM-ignoring CodeGraph prevented harness launch"
-  assert_contains "$out" "warning: CodeGraph init timed out after 30s for task $ID; spawn will continue" "TERM-ignoring CodeGraph did not report the bounded timeout"
+  expect_code 0 "$status" "independent watchdog should observe the preparation phase complete within its declared bound"
+  assert_contains "$out" "spawned $ID" "a stubborn preparation operation prevented harness launch"
+  assert_contains "$out" "warning: CodeGraph status timed out after 3s for task $ID; spawn will continue" "the phase boundary did not identify the unwrapped stubborn operation"
   warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
-  [ "$warning_count" -eq 1 ] || fail "TERM-ignoring CodeGraph printed $warning_count warnings instead of one"
-  assert_grep 'codegraph=init-timeout' "$HOME_DIR/state/$ID.meta" "TERM-ignoring timeout was not recorded in meta"
-  assert_absent "$WT_DIR/.codegraph" "TERM-ignoring timed-out init left a partial index behind"
-  status_budget=$(sed -n '1p' "$CASE_DIR/timeout-budgets.log")
-  action_budget=$(sed -n '2p' "$CASE_DIR/timeout-budgets.log")
-  [ "$action_budget" -lt "$status_budget" ] || fail "status and action received separate timeout budgets instead of one decreasing deadline ($status_budget then $action_budget)"
-  pass "a TERM-ignoring CodeGraph process is killed, recorded, and bypassed within one decreasing total deadline"
+  [ "$warning_count" -eq 1 ] || fail "the bounded preparation phase printed $warning_count warnings instead of one"
+  assert_grep 'codegraph=status-timeout' "$HOME_DIR/state/$ID.meta" "the bounded preparation outcome was not recorded in meta"
+  pass "the preparation phase bounds a stubborn external operation by construction"
 }
 
 test_executed_exit_125_is_failure_and_cleans_index() {
@@ -429,7 +461,8 @@ test_unrelated_repository_is_refused_before_codegraph
 test_ambient_codegraph_dir_is_forced_and_worktree_stays_clean
 test_nonzero_fails_open
 test_timeout_fails_open
-test_term_ignoring_codegraph_is_killed_within_one_total_deadline
+test_term_ignoring_cleanup_is_killed_and_spawn_continues
+test_preparation_phase_bounds_any_stubborn_external_operation
 test_executed_exit_125_is_failure_and_cleans_index
 test_perl_runner_reports_signal_failure
 test_scout_worktree_initializes
