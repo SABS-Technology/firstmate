@@ -36,6 +36,7 @@ run_bounded() {
     "$WATCHDOG_BIN" --kill-after=1s "${seconds}s" "$@"
     return
   fi
+  # shellcheck disable=SC2016 # single quotes are deliberate: $t, $pid, $SIG, and @ARGV are perl variables the fallback watchdog must receive verbatim, not shell expansions.
   "$WATCHDOG_BIN" -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 } $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 1; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $s = $?; alarm 0; exit(($s & 127) ? 128 + ($s & 127) : $s >> 8)' \
     "$seconds" "$@"
 }
