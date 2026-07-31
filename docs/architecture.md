@@ -108,11 +108,6 @@ Codex App support is recorded in `docs/codex-app-backend.md`; it is not selectab
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees for tmux, herdr, zellij, and cmux tasks, while Orca creates its own worktrees for `backend=orca`.
 For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved task path is a real git worktree root that is distinct from the project primary checkout.
 
-Right after that check, a ship or scout spawn prepares a CodeGraph index for the task worktree as a convenience, never as a launch gate.
-It runs only when `.codegraph/` is git-ignored in that worktree, initializing the index when the directory is absent and syncing it when it already exists, always under a forced `CODEGRAPH_DIR=.codegraph` rather than an ambient override; a worktree that does not git-ignore `.codegraph/` is skipped.
-One bounded timeout covers the call, and a non-zero exit, timeout, missing `codegraph` binary, or any other failure warns exactly once and launches the agent anyway.
-Either way the outcome is recorded once as `codegraph=` in task meta; `bin/fm-spawn.sh` owns the exact timeout and status values.
-
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
 Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.
 The primary checkout is healthy on its default branch, and linked worktrees or secondmate homes are healthy at detached HEAD.
