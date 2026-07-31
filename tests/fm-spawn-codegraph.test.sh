@@ -12,6 +12,59 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-codegraph)
 
+# An independent watchdog for the spawn under test, resolved from the real
+# environment before any fakebin shadows it. GNU timeout or gtimeout when the
+# host has one, otherwise the same perl alarm fallback fm-spawn itself relies
+# on, so the watchdog regressions assert their bound on a stock macOS host
+# instead of failing with status 127 on a missing coreutils.
+WATCHDOG_KIND=''
+WATCHDOG_BIN=''
+if WATCHDOG_BIN=$(command -v timeout) || WATCHDOG_BIN=$(command -v gtimeout); then
+  WATCHDOG_KIND=timeout
+elif WATCHDOG_BIN=$(command -v perl); then
+  WATCHDOG_KIND=perl
+else
+  fail "no timeout, gtimeout, or perl is available to bound the spawn under test"
+fi
+
+# run_bounded <seconds> <command...>: run the command under that watchdog,
+# exiting 124 after TERM-then-KILL of its whole process group when it overruns.
+run_bounded() {
+  local seconds=$1
+  shift
+  if [ "$WATCHDOG_KIND" = timeout ]; then
+    "$WATCHDOG_BIN" --kill-after=1s "${seconds}s" "$@"
+    return
+  fi
+  "$WATCHDOG_BIN" -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 } $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 1; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $s = $?; alarm 0; exit(($s & 127) ? 128 + ($s & 127) : $s >> 8)' \
+    "$seconds" "$@"
+}
+
+# The stubbed `timeout` from install_spawn_fakes never bounds anything, so a
+# watchdog regression has to replace it: with a passthrough to the host's real
+# GNU timeout when one exists, and otherwise with nothing at all, so fm-spawn
+# resolves its perl fallback exactly as it would on a host without coreutils.
+# runner-mode `perl` always removes it, so a regression in the forced-runner
+# hook shows up as an unbounded operation rather than a silent host-runner pass.
+install_watchdog_timeout_fake() {  # <fakebin> <runner-mode>
+  local fakebin=$1 mode=$2
+  if [ "$mode" != perl ] && [ "$WATCHDOG_KIND" = timeout ]; then
+    cat > "$fakebin/timeout" <<'SH'
+#!/usr/bin/env bash
+exec "${FM_REAL_TIMEOUT:?}" "$@"
+SH
+    chmod +x "$fakebin/timeout"
+    return 0
+  fi
+  rm -f "$fakebin/timeout"
+}
+
+# The runner fm-spawn must use for a given mode: empty leaves its own
+# host preflight in charge, `perl` forces the fallback path.
+watchdog_forced_runner() {  # <runner-mode>
+  [ "$1" != perl ] || printf 'perl\n'
+}
+
 # <name> <ignores-.codegraph> <existing-index>, where existing-index is one of:
 #   none     - no .codegraph directory at all
 #   partial  - an initialized database whose state marker reports partial
@@ -291,64 +344,77 @@ test_timeout_fails_open() {
   pass "CodeGraph timeout warns, records timeout, discards the partial index, and fails open"
 }
 
-test_term_ignoring_cleanup_is_killed_and_spawn_continues() {
-  local rec out status warning_count real_timeout real_rm
-  rec=$(make_case stubborn-cleanup yes partial)
+check_term_ignoring_cleanup() {  # <runner-mode>
+  local mode=$1 rec out status warning_count real_rm rm_pid waited
+  rec=$(make_case "stubborn-cleanup-$mode" yes partial)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
-  real_timeout=$(command -v timeout)
+  install_watchdog_timeout_fake "$FAKEBIN_DIR" "$mode"
   real_rm=$(command -v rm)
-  cat > "$FAKEBIN_DIR/timeout" <<'SH'
-#!/usr/bin/env bash
-exec "${FM_REAL_TIMEOUT:?}" "$@"
-SH
   cat > "$FAKEBIN_DIR/rm" <<'SH'
 #!/usr/bin/env bash
 set -u
 case " $* " in
   *" /.codegraph "|*"/.codegraph "|*"/.codegraph")
-    printf '%s\n' "$*" >> "${FM_FAKE_RM_LOG:?}"
+    printf 'pid=%s %s\n' "$$" "$*" >> "${FM_FAKE_RM_LOG:?}"
     trap '' TERM
     while :; do sleep 1; done
     ;;
 esac
 exec "${FM_REAL_RM:?}" "$@"
 SH
-  chmod +x "$FAKEBIN_DIR/timeout" "$FAKEBIN_DIR/rm"
-  out=$(FM_REAL_TIMEOUT="$real_timeout" FM_REAL_RM="$real_rm" \
-    FM_FAKE_RM_LOG="$CASE_DIR/rm.log" "$real_timeout" --kill-after=1s 7s \
+  chmod +x "$FAKEBIN_DIR/rm"
+  out=$(FM_REAL_TIMEOUT="$WATCHDOG_BIN" FM_REAL_RM="$real_rm" \
+    FM_FAKE_RM_LOG="$CASE_DIR/rm.log" \
+    run_bounded 7 \
     env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
       FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
       FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
       FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
       FM_SPAWN_TEST_CODEGRAPH_TOTAL_TIMEOUT_SECONDS=3 \
+      FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER="$(watchdog_forced_runner "$mode")" \
       FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" \
       FM_FAKE_CODEGRAPH_STATE="$INDEX_STATE" \
       PATH="$FAKEBIN_DIR:$PATH" "$SPAWN" "$ID" "$PROJ_DIR" 2>&1)
   status=$?
-  expect_code 0 "$status" "independent watchdog should observe spawn complete after cleanup ignores TERM"
-  assert_contains "$out" "spawned $ID" "TERM-ignoring cleanup prevented harness launch"
-  assert_contains "$out" "warning: CodeGraph cleanup timed out after 3s for task $ID; init skipped and spawn will continue" "TERM-ignoring cleanup did not report the bounded timeout"
+  expect_code 0 "$status" "independent watchdog should observe spawn complete after cleanup ignores TERM on the $mode runner"
+  assert_contains "$out" "spawned $ID" "TERM-ignoring cleanup prevented harness launch on the $mode runner"
+  assert_contains "$out" "warning: CodeGraph cleanup timed out after 3s for task $ID; init skipped and spawn will continue" "TERM-ignoring cleanup did not report the bounded timeout on the $mode runner"
   warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
-  [ "$warning_count" -eq 1 ] || fail "TERM-ignoring cleanup printed $warning_count warnings instead of one"
-  assert_grep 'codegraph=cleanup-timeout' "$HOME_DIR/state/$ID.meta" "TERM-ignoring cleanup timeout was not recorded in meta"
-  assert_grep "dir=.codegraph status --json $WT_DIR" "$CASE_DIR/codegraph.log" "cleanup timeout regression did not enter the incomplete-index path"
-  assert_no_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "init ran after cleanup failed to finish"
-  assert_grep '/.codegraph' "$CASE_DIR/rm.log" "cleanup timeout regression did not invoke rm for the incomplete index"
-  pass "a TERM-ignoring cleanup is killed, recorded once, and bypassed without blocking spawn"
+  [ "$warning_count" -eq 1 ] || fail "TERM-ignoring cleanup printed $warning_count warnings instead of one on the $mode runner"
+  assert_grep 'codegraph=cleanup-timeout' "$HOME_DIR/state/$ID.meta" "TERM-ignoring cleanup timeout was not recorded in meta on the $mode runner"
+  assert_grep "dir=.codegraph status --json $WT_DIR" "$CASE_DIR/codegraph.log" "cleanup timeout regression did not enter the incomplete-index path on the $mode runner"
+  assert_no_grep "dir=.codegraph init $WT_DIR" "$CASE_DIR/codegraph.log" "init ran after cleanup failed to finish on the $mode runner"
+  assert_grep '/.codegraph' "$CASE_DIR/rm.log" "cleanup timeout regression did not invoke rm for the incomplete index on the $mode runner"
+  rm_pid=$(sed -n 's/^pid=\([0-9][0-9]*\) .*/\1/p' "$CASE_DIR/rm.log" | head -1)
+  [ -n "$rm_pid" ] || fail "cleanup timeout regression did not record the stubborn rm's pid on the $mode runner"
+  waited=0
+  while kill -0 "$rm_pid" 2>/dev/null; do
+    [ "$waited" -lt 40 ] || fail "the TERM-ignoring cleanup outlived the phase watchdog as an orphan on the $mode runner"
+    sleep 0.1
+    waited=$((waited + 1))
+  done
 }
 
-test_preparation_phase_bounds_any_stubborn_external_operation() {
-  local rec out status warning_count real_grep real_timeout
-  rec=$(make_case stubborn-status yes none)
+# Run on whatever inner runner the host preflight picks, and again with fm-spawn
+# forced onto its perl fallback: that is the default runner on a stock macOS
+# host, and the only path where the watchdog has to relay its signal into a
+# relocated child process group instead of leaning on GNU timeout's own bound.
+test_term_ignoring_cleanup_is_killed_and_spawn_continues() {
+  local mode
+  for mode in host perl; do
+    check_term_ignoring_cleanup "$mode"
+  done
+  pass "a TERM-ignoring cleanup is killed, recorded once, and bypassed without blocking spawn on the host and perl runners"
+}
+
+check_preparation_phase_bound() {  # <runner-mode>
+  local mode=$1 rec out status warning_count real_grep
+  rec=$(make_case "stubborn-status-$mode" yes none)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
+  install_watchdog_timeout_fake "$FAKEBIN_DIR" "$mode"
   real_grep=$(command -v grep)
-  real_timeout=$(command -v timeout)
-  cat > "$FAKEBIN_DIR/timeout" <<'SH'
-#!/usr/bin/env bash
-exec "${FM_REAL_TIMEOUT:?}" "$@"
-SH
   cat > "$FAKEBIN_DIR/codegraph" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -366,24 +432,34 @@ case " $* " in
 esac
 exec "${FM_REAL_GREP:?}" "$@"
 SH
-  chmod +x "$FAKEBIN_DIR/timeout" "$FAKEBIN_DIR/codegraph" "$FAKEBIN_DIR/grep"
-  out=$(FM_REAL_GREP="$real_grep" FM_REAL_TIMEOUT="$real_timeout" \
-    "$real_timeout" --kill-after=1s 7s \
+  chmod +x "$FAKEBIN_DIR/codegraph" "$FAKEBIN_DIR/grep"
+  out=$(FM_REAL_GREP="$real_grep" FM_REAL_TIMEOUT="$WATCHDOG_BIN" \
+    run_bounded 7 \
     env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
       FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
       FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
       FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
       FM_SPAWN_TEST_CODEGRAPH_TOTAL_TIMEOUT_SECONDS=3 \
+      FM_SPAWN_TEST_CODEGRAPH_TIMEOUT_RUNNER="$(watchdog_forced_runner "$mode")" \
       FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" \
       PATH="$FAKEBIN_DIR:$PATH" "$SPAWN" "$ID" "$PROJ_DIR" 2>&1)
   status=$?
-  expect_code 0 "$status" "independent watchdog should observe the preparation phase complete within its declared bound"
-  assert_contains "$out" "spawned $ID" "a stubborn preparation operation prevented harness launch"
-  assert_contains "$out" "warning: CodeGraph status timed out after 3s for task $ID; spawn will continue" "the phase boundary did not identify the unwrapped stubborn operation"
+  expect_code 0 "$status" "independent watchdog should observe the preparation phase complete within its declared bound on the $mode runner"
+  assert_contains "$out" "spawned $ID" "a stubborn preparation operation prevented harness launch on the $mode runner"
+  assert_contains "$out" "warning: CodeGraph status timed out after 3s for task $ID; spawn will continue" "the phase boundary did not identify the unwrapped stubborn operation on the $mode runner"
   warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
-  [ "$warning_count" -eq 1 ] || fail "the bounded preparation phase printed $warning_count warnings instead of one"
-  assert_grep 'codegraph=status-timeout' "$HOME_DIR/state/$ID.meta" "the bounded preparation outcome was not recorded in meta"
-  pass "the preparation phase bounds a stubborn external operation by construction"
+  [ "$warning_count" -eq 1 ] || fail "the bounded preparation phase printed $warning_count warnings instead of one on the $mode runner"
+  assert_grep 'codegraph=status-timeout' "$HOME_DIR/state/$ID.meta" "the bounded preparation outcome was not recorded in meta on the $mode runner"
+}
+
+# The class-level bound: the stubborn operation here is an ordinary `grep` the
+# phase never wraps in its own runner, so only the phase boundary can end it.
+test_preparation_phase_bounds_any_stubborn_external_operation() {
+  local mode
+  for mode in host perl; do
+    check_preparation_phase_bound "$mode"
+  done
+  pass "the preparation phase bounds a stubborn external operation by construction on the host and perl runners"
 }
 
 test_executed_exit_125_is_failure_and_cleans_index() {
