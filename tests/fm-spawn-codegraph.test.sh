@@ -12,8 +12,12 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-codegraph)
 
+# <name> <ignores-.codegraph> <existing-index>, where existing-index is one of:
+#   none     - no .codegraph directory at all
+#   partial  - a .codegraph directory with no completed-index marker
+#   complete - a .codegraph directory whose CodeGraph marker reports complete
 make_case() {
-  local name=$1 ignored=$2 existing=$3 case_dir home proj wt fakebin
+  local name=$1 ignored=$2 existing=$3 case_dir home proj wt fakebin state
   local id="codegraph-$name"
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
@@ -31,14 +35,16 @@ make_case() {
     git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm 'ignore codegraph'
   fi
   git -C "$proj" worktree add --quiet -b "fixture-$name" "$wt"
-  if [ "$existing" = yes ]; then
-    mkdir -p "$wt/.codegraph"
-  fi
-  printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$id"
+  state=absent
+  case "$existing" in
+    partial) mkdir -p "$wt/.codegraph" ;;
+    complete) mkdir -p "$wt/.codegraph"; state=complete ;;
+  esac
+  printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$id|$state"
 }
 
 read_case() {
-  IFS='|' read -r CASE_DIR HOME_DIR PROJ_DIR WT_DIR FAKEBIN_DIR ID <<EOF
+  IFS='|' read -r CASE_DIR HOME_DIR PROJ_DIR WT_DIR FAKEBIN_DIR ID INDEX_STATE <<EOF
 $1
 EOF
 }
@@ -71,7 +77,19 @@ exec "$@"
 SH
   cat > "$fakebin/codegraph" <<'SH'
 #!/usr/bin/env bash
-printf '%s|%s\n' "$1" "$2" >> "${FM_FAKE_CODEGRAPH_LOG:?}"
+set -u
+printf '%s\n' "$*" >> "${FM_FAKE_CODEGRAPH_LOG:?}"
+if [ "${1:-}" = status ]; then
+  if [ "${FM_FAKE_CODEGRAPH_STATE:-absent}" = complete ]; then
+    printf '{"initialized":true,"index":{"state":"complete","pendingRefs":0}}\n'
+  else
+    printf '{"initialized":false,"lastIndexed":null}\n'
+  fi
+  exit 0
+fi
+if [ "${1:-}" = init ]; then
+  mkdir -p "${2:?}/.codegraph"
+fi
 if [ "${FM_FAKE_CODEGRAPH_RESULT:-ok}" = fail ]; then
   printf 'fake codegraph diagnostic that spawn must suppress\n' >&2
   exit 7
@@ -88,41 +106,58 @@ run_spawn() {
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' FM_FAKE_PANE_PATH="$WT_DIR" \
     FM_FAKE_CODEGRAPH_LOG="$CASE_DIR/codegraph.log" FM_FAKE_CODEGRAPH_RESULT="$result" \
+    FM_FAKE_CODEGRAPH_STATE="$INDEX_STATE" \
     FM_FAKE_TIMEOUT_RESULT="$timeout_result" PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$ID" "$PROJ_DIR" 2>&1
 }
 
 test_ignored_absent_initializes() {
   local rec out status
-  rec=$(make_case init yes no)
+  rec=$(make_case init yes none)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
   out=$(run_spawn)
   status=$?
   expect_code 0 "$status" "ignored absent CodeGraph spawn should succeed"
   assert_contains "$out" "spawned $ID" "ignored absent spawn did not launch"
-  assert_grep "init|$WT_DIR" "$CASE_DIR/codegraph.log" "ignored absent worktree did not run codegraph init"
+  assert_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "ignored absent worktree did not run codegraph init"
   assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "init outcome was not recorded in meta"
   pass "ignored worktree without an index runs CodeGraph init"
 }
 
-test_ignored_present_syncs() {
+test_partial_index_initializes() {
   local rec out status
-  rec=$(make_case sync yes yes)
+  rec=$(make_case partial yes partial)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
   out=$(run_spawn)
   status=$?
-  expect_code 0 "$status" "ignored existing CodeGraph spawn should succeed"
-  assert_contains "$out" "spawned $ID" "ignored existing spawn did not launch"
-  assert_grep "sync|$WT_DIR" "$CASE_DIR/codegraph.log" "ignored existing worktree did not run codegraph sync"
+  expect_code 0 "$status" "partial CodeGraph index spawn should succeed"
+  assert_contains "$out" "spawned $ID" "partial index spawn did not launch"
+  assert_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "partial index did not re-run codegraph init"
+  assert_no_grep "sync $WT_DIR" "$CASE_DIR/codegraph.log" "partial index was synced instead of re-initialized"
+  assert_grep 'codegraph=initialized' "$HOME_DIR/state/$ID.meta" "init outcome was not recorded in meta"
+  pass "worktree with a .codegraph directory but no completed-index marker runs CodeGraph init"
+}
+
+test_complete_index_syncs() {
+  local rec out status
+  rec=$(make_case sync yes complete)
+  read_case "$rec"
+  install_spawn_fakes "$FAKEBIN_DIR"
+  out=$(run_spawn)
+  status=$?
+  expect_code 0 "$status" "complete CodeGraph index spawn should succeed"
+  assert_contains "$out" "spawned $ID" "complete index spawn did not launch"
+  assert_grep "sync $WT_DIR" "$CASE_DIR/codegraph.log" "complete index did not run codegraph sync"
+  assert_no_grep "init $WT_DIR" "$CASE_DIR/codegraph.log" "complete index was re-initialized instead of synced"
   assert_grep 'codegraph=synced' "$HOME_DIR/state/$ID.meta" "sync outcome was not recorded in meta"
-  pass "ignored worktree with an index runs CodeGraph sync"
+  pass "worktree with a completed-index marker runs CodeGraph sync"
 }
 
 test_not_ignored_skips() {
   local rec out status
-  rec=$(make_case skip no no)
+  rec=$(make_case skip no none)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
   out=$(run_spawn)
@@ -136,7 +171,7 @@ test_not_ignored_skips() {
 
 test_nonzero_fails_open() {
   local rec out status warning_count
-  rec=$(make_case failure yes no)
+  rec=$(make_case failure yes none)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
   out=$(run_spawn fail)
@@ -148,12 +183,13 @@ test_nonzero_fails_open() {
   warning_count=$(printf '%s\n' "$out" | grep -c '^warning: CodeGraph ')
   [ "$warning_count" -eq 1 ] || fail "CodeGraph failure printed $warning_count warnings instead of one"
   assert_grep 'codegraph=init-failed' "$HOME_DIR/state/$ID.meta" "failure outcome was not recorded in meta"
-  pass "CodeGraph non-zero exit warns once, records failure, and fails open"
+  [ ! -e "$WT_DIR/.codegraph" ] || fail "failed CodeGraph init left an unusable index behind"
+  pass "CodeGraph non-zero exit warns once, records failure, discards the partial index, and fails open"
 }
 
 test_timeout_fails_open() {
   local rec out status
-  rec=$(make_case timeout yes no)
+  rec=$(make_case timeout yes partial)
   read_case "$rec"
   install_spawn_fakes "$FAKEBIN_DIR"
   out=$(run_spawn ok timeout)
@@ -162,11 +198,13 @@ test_timeout_fails_open() {
   assert_contains "$out" "spawned $ID" "CodeGraph timeout prevented launch"
   assert_contains "$out" "warning: CodeGraph init timed out after 30s for task $ID; spawn will continue" "CodeGraph timeout warning was unclear"
   assert_grep 'codegraph=init-timeout' "$HOME_DIR/state/$ID.meta" "timeout outcome was not recorded in meta"
-  pass "CodeGraph timeout warns, records timeout, and fails open"
+  [ ! -e "$WT_DIR/.codegraph" ] || fail "timed-out CodeGraph init left an unusable index behind"
+  pass "CodeGraph timeout warns, records timeout, discards the partial index, and fails open"
 }
 
 test_ignored_absent_initializes
-test_ignored_present_syncs
+test_partial_index_initializes
+test_complete_index_syncs
 test_not_ignored_skips
 test_nonzero_fails_open
 test_timeout_fails_open

@@ -805,18 +805,48 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
-run_codegraph_bounded() {  # <init|sync> <worktree>
-  local action=$1 worktree=$2 timeout_seconds=30
+run_codegraph_bounded() {  # <timeout-seconds> <codegraph-args...>
+  local timeout_seconds=$1
+  shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$timeout_seconds" codegraph "$action" "$worktree"
+    timeout "$timeout_seconds" codegraph "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$timeout_seconds" codegraph "$action" "$worktree"
+    gtimeout "$timeout_seconds" codegraph "$@"
   elif command -v perl >/dev/null 2>&1; then
     perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
-      "$timeout_seconds" codegraph "$action" "$worktree"
+      "$timeout_seconds" codegraph "$@"
   else
     return 125
   fi
+}
+
+# Directory existence is never proof of a usable index: a pooled worktree can
+# carry a half-written `.codegraph/` from a killed init, or one created by
+# something other than CodeGraph. CodeGraph's own completed-index marker is the
+# `index_state` row it flips to `complete` only after a full index lands
+# (`indexing`/`partial`/`failed` otherwise), surfaced by `status --json` as
+# `index.state`. Only that positive proof selects sync; anything else - probe
+# failure, missing marker, older CLI that does not report it - selects init.
+codegraph_index_is_complete() {  # <worktree>
+  local worktree=$1 probe
+  probe=$(run_codegraph_bounded 10 status --json "$worktree" 2>/dev/null) || return 1
+  printf '%s' "$probe" | grep -Eq '"initialized"[[:space:]]*:[[:space:]]*true' || return 1
+  printf '%s' "$probe" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"complete"'
+}
+
+# An init that did not complete leaves an unusable index behind; keeping it
+# would pin every later spawn on this pooled worktree to syncing a baseline
+# that never existed. Removal is confined to the isolated task worktree and is
+# itself fail-open - it never blocks dispatch.
+discard_incomplete_codegraph_index() {  # <worktree>
+  local worktree=$1 worktree_real
+  [ -n "$worktree" ] || return 0
+  worktree_real=$(cd "$worktree" 2>/dev/null && pwd -P) || return 0
+  [ -n "$worktree_real" ] || return 0
+  [ "$worktree_real" != "$PROJ_ABS_REAL" ] || return 0
+  [ -d "$worktree_real/.codegraph" ] || return 0
+  rm -rf "$worktree_real/.codegraph" 2>/dev/null || true
+  return 0
 }
 
 index_task_worktree() {
@@ -829,23 +859,26 @@ index_task_worktree() {
   if ! git -C "$WT" check-ignore -q .codegraph; then
     return 0
   fi
-  if [ -d "$WT/.codegraph" ]; then
+  if ! command -v codegraph >/dev/null 2>&1; then
+    CODEGRAPH_STATUS=init-unavailable
+    echo "warning: CodeGraph init skipped for task $ID because codegraph is unavailable; spawn will continue" >&2
+    return 0
+  fi
+  if codegraph_index_is_complete "$WT"; then
     action=sync
     success_status=synced
   else
     action=init
     success_status=initialized
   fi
-  if ! command -v codegraph >/dev/null 2>&1; then
-    CODEGRAPH_STATUS="${action}-unavailable"
-    echo "warning: CodeGraph $action skipped for task $ID because codegraph is unavailable; spawn will continue" >&2
-    return 0
-  fi
-  if run_codegraph_bounded "$action" "$WT" >/dev/null 2>&1; then
+  if run_codegraph_bounded 30 "$action" "$WT" >/dev/null 2>&1; then
     CODEGRAPH_STATUS=$success_status
     return 0
   else
     rc=$?
+  fi
+  if [ "$action" = init ]; then
+    discard_incomplete_codegraph_index "$WT"
   fi
   case "$rc" in
     124)
