@@ -81,6 +81,9 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   After that check, a ship/scout spawn initializes or syncs the task worktree's
+#   git-ignored .codegraph/ index. The call is bounded to 30 seconds and any
+#   failure warns once, records the outcome, and launches the agent anyway.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -1084,6 +1087,35 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   validate_spawn_worktree "treehouse get" "$T"
 fi
 
+# CodeGraph is a best-effort convenience for task worktrees, never a launch gate.
+CODEGRAPH_STATUS=skipped-non-task
+if [ "$KIND" != secondmate ]; then
+  CODEGRAPH_STATUS=skipped-not-ignored
+  if git -C "$WT" check-ignore -q .codegraph/; then
+    CODEGRAPH_ACTION=init
+    CODEGRAPH_SUCCESS=initialized
+    if [ -d "$WT/.codegraph" ]; then
+      CODEGRAPH_ACTION=sync
+      CODEGRAPH_SUCCESS=synced
+    fi
+    if CODEGRAPH_DIR=.codegraph DO_NOT_TRACK=1 perl -e '
+      my $timeout = shift;
+      my $pid = fork;
+      die "fork failed" unless defined $pid;
+      if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+      local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 };
+      alarm $timeout;
+      waitpid $pid, 0;
+      exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+    ' 30 codegraph "$CODEGRAPH_ACTION" "$WT" >/dev/null 2>&1; then
+      CODEGRAPH_STATUS=$CODEGRAPH_SUCCESS
+    else
+      CODEGRAPH_STATUS="${CODEGRAPH_ACTION}-failed"
+      echo "warning: CodeGraph $CODEGRAPH_ACTION failed or timed out for task $ID; spawn will continue" >&2
+    fi
+  fi
+fi
+
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
@@ -1224,6 +1256,7 @@ META_WINDOW=$T
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  echo "codegraph=$CODEGRAPH_STATUS"
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
   # data/fm-backend-design-d7's P1 compatibility contract).
