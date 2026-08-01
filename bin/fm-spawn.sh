@@ -1098,9 +1098,6 @@ if [ "$KIND" != secondmate ]; then
       CODEGRAPH_ACTION=sync
       CODEGRAPH_SUCCESS=synced
     fi
-    # DO_NOT_TRACK=1 keeps this unattended index silent: CodeGraph honors it above
-    # an ambient CODEGRAPH_TELEMETRY=1, so a spawn never transmits telemetry and never
-    # spends the operator's one-time telemetry disclosure on a machine nobody is watching.
     if CODEGRAPH_DIR=.codegraph DO_NOT_TRACK=1 perl -e '
       my $timeout = shift;
       my $pid = fork;
