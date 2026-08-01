@@ -1098,7 +1098,7 @@ if [ "$KIND" != secondmate ]; then
       CODEGRAPH_ACTION=sync
       CODEGRAPH_SUCCESS=synced
     fi
-    if CODEGRAPH_DIR=.codegraph perl -e '
+    if CODEGRAPH_DIR=.codegraph DO_NOT_TRACK=1 perl -e '
       my $timeout = shift;
       my $pid = fork;
       die "fork failed" unless defined $pid;
