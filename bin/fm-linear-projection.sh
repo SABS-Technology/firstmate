@@ -5,7 +5,7 @@
 #   fm-linear-projection.sh sync
 #   fm-linear-projection.sh schema-check
 #
-# `sync` requires FM_LINEAR_PROJECTION_ENABLED=1, LINEAR_API_TOKEN, and the
+# `sync` requires FM_LINEAR_PROJECTION_ENABLED=1, LINEAR_API_KEY, and the
 # config/linear-projection.json contract documented in docs/configuration.md.
 # It reads the canonical captain queue through fm-captain-queue.sh --json,
 # resolves stages only from state/stage-transitions.tsv, and never writes the

@@ -20,8 +20,8 @@ cat > "$FAKE_LINEAR" <<'EOF'
 set -eu
 request=$(cat)
 if [ "${FAKE_LINEAR_FAIL:-0}" = 1 ]; then
-  printf '%s\n' "${LINEAR_API_TOKEN:-}" >&2
-  printf '%s\n' "${LINEAR_API_TOKEN:-}"
+  printf '%s\n' "${LINEAR_API_KEY:-}" >&2
+  printf '%s\n' "${LINEAR_API_KEY:-}"
   exit 17
 fi
 printf '%s\n' "$request" >> "$FAKE_LINEAR_LOG"
@@ -108,7 +108,7 @@ sync_env() { # <home> [command]
   local home=$1 command=${2:-sync}
   FM_HOME="$home" \
   FM_LINEAR_PROJECTION_ENABLED=1 \
-  LINEAR_API_TOKEN="$TOKEN" \
+  LINEAR_API_KEY="$TOKEN" \
   FM_LINEAR_TRANSPORT="$FAKE_LINEAR" \
   FM_GITHUB_STATUS_TRANSPORT="$FAKE_GITHUB" \
   FM_CAPTAIN_QUEUE_BIN="$FAKE_QUEUE" \
@@ -130,7 +130,7 @@ test_prerequisites_fail_closed_before_transport() {
   local home out rc
   home=$(make_fixture missing-opt-in)
   set +e
-  out=$(FM_HOME="$home" LINEAR_API_TOKEN="$TOKEN" FM_LINEAR_TRANSPORT="$FAKE_LINEAR" FAKE_LINEAR_LOG="$home/linear.log" "$PROJECTION" sync 2>&1)
+  out=$(FM_HOME="$home" LINEAR_API_KEY="$TOKEN" FM_LINEAR_TRANSPORT="$FAKE_LINEAR" FAKE_LINEAR_LOG="$home/linear.log" "$PROJECTION" sync 2>&1)
   rc=$?
   set -e
   expect_code 1 "$rc" "disabled projection must refuse"
@@ -143,13 +143,13 @@ test_prerequisites_fail_closed_before_transport() {
   rc=$?
   set -e
   expect_code 1 "$rc" "tokenless projection must refuse"
-  assert_contains "$out" "missing requirement: LINEAR_API_TOKEN" "tokenless projection did not name the credential"
+  assert_contains "$out" "missing requirement: LINEAR_API_KEY" "tokenless projection did not name the credential"
   [ "$(line_count "$home/linear.log")" = 0 ] || fail "tokenless projection reached Linear"
 
   home=$(make_fixture missing-config)
   rm "$home/config/linear-projection.json"
   set +e
-  out=$(FM_HOME="$home" FM_LINEAR_PROJECTION_ENABLED=1 LINEAR_API_TOKEN="$TOKEN" FM_LINEAR_TRANSPORT="$FAKE_LINEAR" FAKE_LINEAR_LOG="$home/linear.log" "$PROJECTION" sync 2>&1)
+  out=$(FM_HOME="$home" FM_LINEAR_PROJECTION_ENABLED=1 LINEAR_API_KEY="$TOKEN" FM_LINEAR_TRANSPORT="$FAKE_LINEAR" FAKE_LINEAR_LOG="$home/linear.log" "$PROJECTION" sync 2>&1)
   rc=$?
   set -e
   expect_code 1 "$rc" "unconfigured projection must refuse"
@@ -171,6 +171,7 @@ test_entities_keep_stage_and_pr_axes_and_link_decisions() {
     || fail "projection summary did not report exactly one entity per work item: $summary"
   printf '%s' "$log" | jq -e '
     ([.[] | select(.operationName == "CreateIssue")] | length) == 3
+    and all(.[] | select(.operationName == "CreateIssue"); .variables.input.id | test("^[0-9a-f-]{14}4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))
     and all(.[] | select(.operationName == "CreateIssue"); (.variables.input | has("parentId") | not))
     and any(.[] | select(.operationName == "CreateIssue"); .variables.input.description | contains("Stage: validation\nGitHub PR: https://github.com/SABS-Technology/firstmate/pull/42\nGitHub PR status: open; checks=green"))
     and any(.[] | select(.operationName == "CreateIssue"); .variables.input.description | contains("Stage: investigation\nGitHub PR: none\nGitHub PR status: none; checks=none"))
@@ -178,7 +179,7 @@ test_entities_keep_stage_and_pr_axes_and_link_decisions() {
   decision_issue=$(jq -r '.items["ship-a-decision-approval"].remote_issue_id' "$state")
   printf '%s' "$log" | jq -e --arg issue "$decision_issue" '
     any(.[] | select(.operationName == "CreateIssue"); .variables.input.id == $issue and (.variables.input.description | contains("Type: decision")))
-    and any(.[] | select(.operationName == "LinkGitHubPr"); .variables.issueId == $issue and .variables.url == "https://github.com/SABS-Technology/firstmate/pull/42")
+    and any(.[] | select(.operationName == "LinkGitHubPr"); .variables.issueId == $issue and .variables.url == "https://github.com/SABS-Technology/firstmate/pull/42" and (.variables.id | test("^[0-9a-f-]{14}4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")))
     and all(.[] | select(.operationName == "LinkGitHubPr"); .query | contains("linkKind: links"))
   ' >/dev/null || fail "decision was not a peer entity linked to its PR: $log"
   [ "$(cat "$home/queue.calls")" = "--json" ] || fail "projection did not consume fm-captain-queue --json"

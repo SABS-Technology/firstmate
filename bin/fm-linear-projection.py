@@ -83,8 +83,8 @@ def regular_text(path, required=False):
 def load_config(config_dir):
     if os.environ.get("FM_LINEAR_PROJECTION_ENABLED") != "1":
         raise ProjectionError("missing requirement: FM_LINEAR_PROJECTION_ENABLED=1")
-    if not os.environ.get("LINEAR_API_TOKEN"):
-        raise ProjectionError("missing requirement: LINEAR_API_TOKEN")
+    if not os.environ.get("LINEAR_API_KEY"):
+        raise ProjectionError("missing requirement: LINEAR_API_KEY")
     path = Path(os.environ.get("FM_LINEAR_CONFIG", config_dir / "linear-projection.json"))
     try:
         value = json.loads(regular_text(path, required=True))
@@ -110,7 +110,7 @@ def load_config(config_dir):
 def child_env(include_token=False):
     value = os.environ.copy()
     if not include_token:
-        value.pop("LINEAR_API_TOKEN", None)
+        value.pop("LINEAR_API_KEY", None)
     return value
 
 
@@ -372,12 +372,12 @@ def sync(root, home, data_dir, state_dir, config_dir):
     journal_path = state_dir / "linear-projection.json"
     journal = load_state(journal_path, config["workspace_id"])
     entities = build_entities(items, queue, stages, state_dir)
-    token = os.environ["LINEAR_API_TOKEN"]
+    token = os.environ["LINEAR_API_KEY"]
     namespace = uuid.UUID(config["workspace_id"])
     summary = {"schema": "fm-linear-projection-run.v1", "source_count": len(entities), "created": 0, "updated": 0, "linked": 0, "archived": 0, "unchanged": 0, "absent": 0}
     live_ids = {item["id"] for item in entities}
     for item in entities:
-        issue_id = str(uuid.uuid5(namespace, f"issue:{item['id']}"))
+        issue_id = str(uuid.UUID(bytes=uuid.uuid5(namespace, f"issue:{item['id']}").bytes, version=4))
         record = journal["items"].get(item["id"])
         if record and record.get("archived"):
             raise ProjectionError("archived projection identity returned live")
@@ -409,7 +409,7 @@ def sync(root, home, data_dir, state_dir, config_dir):
             save_state(journal_path, journal)
             summary["updated"], changed = summary["updated"] + 1, True
         if item["pr_url"] and record["pr_url"] != item["pr_url"]:
-            attachment_id = str(uuid.uuid5(namespace, f"attachment:{item['id']}"))
+            attachment_id = str(uuid.UUID(bytes=uuid.uuid5(namespace, f"attachment:{item['id']}").bytes, version=4))
             variables = {"issueId": issue_id, "url": item["pr_url"], "title": "Linked GitHub pull request", "id": attachment_id}
             data = linear_call("LinkGitHubPr", variables, token)
             if response_id(data, "attachmentLinkGitHubPR", "attachment") != attachment_id:
