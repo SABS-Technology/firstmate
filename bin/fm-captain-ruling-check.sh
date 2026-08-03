@@ -76,9 +76,10 @@ captain_hold_is_open() {
   local id=$1 show
   command -v tasks-axi >/dev/null 2>&1 || return 1
   show=$(cd "$FM_HOME" && tasks-axi show "$id" --full 2>/dev/null) || return 1
+  # The canonical queue admits captain holds on any task kind. Requiring
+  # kind=captain here silently drops real captain decisions on ordinary tasks.
   [ "$(show_field "$show" state)" = queued ] \
     && [ "$(show_field "$show" held)" = yes ] \
-    && [ "$(show_field "$show" kind)" = captain ] \
     && [ "$(show_field "$show" hold_kind)" = captain ]
 }
 

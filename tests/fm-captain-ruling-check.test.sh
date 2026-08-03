@@ -33,6 +33,26 @@ task:
   hold_kind: captain
 OUT
     ;;
+  spec-canonicity-policy)
+    cat <<OUT
+task:
+  id: spec-canonicity-policy
+  state: queued
+  held: yes
+  kind: task
+  hold_kind: captain
+OUT
+    ;;
+  no-active-captain-hold)
+    cat <<OUT
+task:
+  id: no-active-captain-hold
+  state: queued
+  held: yes
+  kind: task
+  hold_kind: crew
+OUT
+    ;;
   closed-decision)
     cat <<OUT
 task:
@@ -47,6 +67,25 @@ OUT
 esac
 SH
   chmod +x "$fakebin/tasks-axi"
+}
+
+test_captain_hold_on_task_kind_is_detected() {
+  local world home fakebin pending out
+  world=$(make_home task-kind); home=${world%%|*}; fakebin=${world#*|}
+  pending="$home/data/pending-decisions.md"
+  cat > "$pending" <<'EOF'
+# Pending decisions
+
+## ✍️ Your replies
+
+spec-canonicity-policy: approve code and tests as canonical
+no-active-captain-hold: this must stay silent
+EOF
+
+  out=$(run_check "$home" "$fakebin") || fail "task-kind captain-hold check failed"
+  [ "$out" = 'captain-ruling spec-canonicity-policy' ] \
+    || fail "active captain hold on kind=task was not detected or non-captain hold leaked: $out"
+  pass "active captain holds are accepted on any task kind while other holds stay silent"
 }
 
 make_home() {
@@ -144,3 +183,4 @@ test_partial_final_line_waits_for_completion() {
 test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
 test_partial_final_line_waits_for_completion
+test_captain_hold_on_task_kind_is_detected
