@@ -59,6 +59,9 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Ship and scout status protocols also embed the separate fm-stage.sh command.
+# They never add stage names to the supervision vocabulary or derive either
+# axis from the other.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -126,6 +129,7 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+STAGE_EMIT="FM_STATE_OVERRIDE=$(shell_quote "$STATE") $(shell_quote "$FM_ROOT/bin/fm-stage.sh") emit $(shell_quote "$ID")"
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -294,6 +298,10 @@ The report is the only thing that survives, so anything worth keeping must be in
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   Work stage is a separate axis from those supervision states. Spawn recorded the initial
+   \`investigation\` stage; never replace a status append with a stage event or derive either
+   axis from the other. If this scout is promoted and the work enters another stage, emit it with:
+   \`$STAGE_EMIT {stage}\`
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
@@ -431,6 +439,11 @@ $RULE1
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   Work stage is a separate axis from those supervision states. Spawn recorded the initial
+   \`implementation\` stage. Whenever work moves between \`implementation\` and \`validation\`,
+   emit the entered stage separately with \`$STAGE_EMIT {stage}\`. Never replace a status append
+   with a stage event or derive either axis from the other. Duplicate and backward stage events
+   are preserved in append order, so re-emit \`implementation\` when validation sends work back.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.

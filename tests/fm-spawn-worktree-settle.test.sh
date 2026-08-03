@@ -90,6 +90,7 @@ EOF
 
 run_settle_spawn() {
   local id=$1
+  shift
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
@@ -97,7 +98,7 @@ run_settle_spawn() {
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+    "$SPAWN" "$id" "$PROJ_DIR" "$@" 2>&1
 }
 
 # A single stale first read (the exact incident) must not be accepted: the
@@ -117,6 +118,10 @@ test_single_stale_first_read_is_not_accepted() {
     "meta did not record the settled worktree"
   assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
     "meta wrongly recorded the transient stale path as the worktree"
+  ! grep -q '^stage=' "$HOME_DIR/state/$id.meta" \
+    || fail "spawn folded the new stage axis into existing task metadata"
+  [ "$(FM_STATE_OVERRIDE="$HOME_DIR/state" "$ROOT/bin/fm-stage.sh" current "$id")" = implementation ] \
+    || fail "spawn did not emit the task's initial implementation stage"
   pass "a single transient stale pane_current_path read is not accepted as the worktree"
 }
 
@@ -141,7 +146,23 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+test_scout_spawn_emits_investigation() {
+  local rec id out status
+  id=settle-scout-z3
+  rec=$(make_settle_case settle-scout "$id" 0)
+  read_settle_record "$rec"
+
+  out=$(run_settle_spawn "$id" --scout)
+  status=$?
+  expect_code 0 "$status" "scout spawn should succeed"
+  assert_contains "$out" "kind=scout" "scout spawn did not report its task kind"
+  [ "$(FM_STATE_OVERRIDE="$HOME_DIR/state" "$ROOT/bin/fm-stage.sh" current "$id")" = investigation ] \
+    || fail "scout spawn did not emit the initial investigation stage"
+  pass "a scout spawn enters investigation rather than implementation"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_scout_spawn_emits_investigation
 
 echo "# all fm-spawn-worktree-settle tests passed"

@@ -511,6 +511,10 @@ test_local_only_fork_remote_allows() {
 
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
+  [ "$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" current task-x1)" = complete ] \
+    || fail "fork-allow: successful teardown did not retain the complete stage event"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "fork-allow: stage history survival must not retain task metadata"
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
 }
 
