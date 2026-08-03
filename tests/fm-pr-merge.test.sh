@@ -100,7 +100,7 @@ run_pr_merge() {
 }
 
 test_records_pr_and_head_before_merging() {
-  local case_dir rc
+  local case_dir rc stages
   case_dir=$(make_case records-before-merge)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
@@ -119,6 +119,9 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: pr_head= was not recorded"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
+  stages=$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" history task-x1 | cut -f2)
+  [ "$stages" = $'pr-open\nmerged' ] \
+    || fail "records-before-merge: PR check and merge did not emit their owned stages: $stages"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
 }
 
@@ -138,6 +141,8 @@ test_merge_failure_propagates_after_recording() {
   expect_code 1 "$rc" "merge-fails: fm-pr-merge should propagate the gh-axi merge failure"
   assert_grep 'pr=https://github.com/example/repo/pull/13' "$case_dir/state/task-x1.meta" \
     "merge-fails: pr= should already be recorded even though the merge itself failed"
+  [ "$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" current task-x1)" = pr-open ] \
+    || fail "merge-fails: failed merge must leave the work at pr-open"
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
