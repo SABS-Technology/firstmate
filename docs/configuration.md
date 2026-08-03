@@ -38,6 +38,18 @@ Set the local, gitignored `config/backlog-backend` file to `manual` to force man
 Absent or `tasks-axi` selects the default tasks-axi backend.
 The file format is unchanged in both modes; tasks-axi and manual edits produce the same `## In flight`, `## Queued`, and `## Done` sections.
 
+## Linear projection (config/linear-projection.json)
+
+`config/linear-projection.json` is the local, gitignored workspace contract for the one-way Linear projection owned by `bin/fm-linear-projection.sh`.
+The file must contain exactly `schema`, `workspace_id`, `team_id`, `untracked_state_id`, and `stage_state_ids`; `schema` is `fm-linear-projection-config.v1`, `workspace_id` is a UUID, and `stage_state_ids` maps every stage emitted by `bin/fm-stage.sh` to the target team's Linear workflow-state id.
+The API credential remains only in `LINEAR_API_TOKEN` and must never be placed in this file.
+Projection egress is fail-closed unless `FM_LINEAR_PROJECTION_ENABLED=1`, the credential is present, and this complete workspace contract is valid.
+The projection journal is private `state/linear-projection.json`; it stores deterministic remote ids, source digests, monotonic per-item revisions, attachment receipts, and archive tombstones, but no credential or vendor response body.
+Firstmate records remain authoritative: the projection reads the canonical `fm-captain-queue.sh --json` result, the backlog and archive, and the stage ledger, while only Linear and its private journal can be mutated.
+GitHub pull requests are Linear attachments with `linkKind: links`; the projection never supplies `parentId`, so captain decisions remain peer issues linked to their PRs rather than PR sub-items.
+After a workspace exists, the live handoff is one command with the local config in place: `FM_LINEAR_PROJECTION_ENABLED=1 LINEAR_API_TOKEN=<key> bin/fm-linear-projection.sh sync`.
+Run `bin/fm-linear-projection.sh schema-check` separately to perform the explicit unauthenticated live-schema validation without enabling projection egress.
+
 ## Runtime backend (config/backend / FM_BACKEND)
 
 For spawn-capable adapters, the runtime session-provider backend controls where task windows/endpoints are created, captured, sent to, watched, and killed.
@@ -357,6 +369,10 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
+FM_LINEAR_PROJECTION_ENABLED=  # must be exactly 1 to authorize a Linear projection sync; absent is fail-closed
+LINEAR_API_TOKEN=        # Linear API credential for projection sync; never written to config, state, logs, errors, or summaries
+FM_LINEAR_TRANSPORT=     # optional injected GraphQL transport executable for tests or alternate egress
+FM_GITHUB_STATUS_TRANSPORT=  # optional injected GitHub PR-status reader for projection tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for the Linux process-identity read in fm-wake-lib.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
