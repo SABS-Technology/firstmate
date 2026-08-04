@@ -205,6 +205,7 @@ EOF
     --kind ship --repo sample >/dev/null \
     || fail "could not create dependent work fixture"
   printf 'Use route north for the sample system.\n' > "$home/route-decision.txt"
+  write_captain_reply "$home" "$route_hold" 'Use route north for the sample system.'
   if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
     --routed-to sample-route-implementation > "$home/early-resolve.out" 2> "$home/early-resolve.err"; then
     fail "captain hold closed before dependent work had a durable routing edge"
@@ -501,6 +502,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
   assert_contains "$show" "blocked_by: \"$hold_first,pad-a,pad-b\"" \
     "first-position fixture must quote multi-entry blocked_by"
   printf 'Decide first edge.\n' > "$home/d-first.txt"
+  write_captain_reply "$home" "$hold_first" 'Decide first edge.'
   if ! run_decisions "$home" resolve "$origin" edge-first --decision-file "$home/d-first.txt" \
     --routed-to dep-first > "$home/first.out" 2> "$home/first.err"; then
     fail "resolve failed when hold id is FIRST in quoted blocked_by: $(cat "$home/first.err")"
@@ -515,6 +517,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
   assert_contains "$show" "blocked_by: \"pad-a,$hold_mid,pad-b\"" \
     "middle-position fixture must quote multi-entry blocked_by"
   printf 'Decide mid edge.\n' > "$home/d-mid.txt"
+  write_captain_reply "$home" "$hold_mid" 'Decide mid edge.'
   if ! run_decisions "$home" resolve "$origin" edge-mid --decision-file "$home/d-mid.txt" \
     --routed-to dep-mid > "$home/mid.out" 2> "$home/mid.err"; then
     fail "resolve failed when hold id is MIDDLE in quoted blocked_by: $(cat "$home/mid.err")"
@@ -529,6 +532,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
   assert_contains "$show" "blocked_by: \"pad-a,pad-b,$hold_last\"" \
     "last-position fixture must quote multi-entry blocked_by"
   printf 'Decide last edge.\n' > "$home/d-last.txt"
+  write_captain_reply "$home" "$hold_last" 'Decide last edge.'
   if ! run_decisions "$home" resolve "$origin" edge-last --decision-file "$home/d-last.txt" \
     --routed-to dep-last > "$home/last.out" 2> "$home/last.err"; then
     fail "resolve failed when hold id is LAST in quoted blocked_by: $(cat "$home/last.err")"
@@ -682,6 +686,88 @@ run_falsified_decisions() {  # <home> <script> <command args...>
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$script" "$@"
+}
+
+decision_hold_with_answer_command() {  # <home> <label> <stub-mode>
+  local home=$1 label=$2 mode=$3 dir
+  dir="$home/answer-command-$label"
+  mkdir -p "$dir"
+  ln -s "$ROOT"/bin/* "$dir/" || fail "could not stage the $label answer-command fixture"
+  rm -f "$dir/fm-decision-hold.sh" "$dir/fm-captain-ruling-check.sh"
+  cp "$ROOT/bin/fm-decision-hold.sh" "$dir/fm-decision-hold.sh"
+  chmod +x "$dir/fm-decision-hold.sh"
+  if [ "$mode" = closed ]; then
+    cat > "$dir/fm-captain-ruling-check.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'fm-captain-ruling-check: captain hold is not open\n' >&2
+exit 1
+EOF
+    chmod +x "$dir/fm-captain-ruling-check.sh"
+  fi
+  printf '%s\n' "$dir/fm-decision-hold.sh"
+}
+
+assert_unreadable_answer_refuses() {  # <condition>
+  local condition=$1 origin key hold home record dependent script='' show
+  origin="sample-$condition-review"
+  key=route
+  hold="$origin-decision-$key"
+  dependent="sample-$condition-work"
+  home=$(make_ruling_home "unreadable-$condition" "$origin" "$key" 'Captain-approved route.')
+  record="$home/data/decisions/$hold.md"
+  printf 'ATTACKER-SUPPLIED ROUTE\n' > "$record"
+  tasks_in "$home" add "$dependent" "Apply the $condition ruling" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the $condition dependent"
+
+  case "$condition" in
+    absent) rm "$home/data/pending-decisions.md" ;;
+    malformed)
+      printf '<!-- BEGIN APPEND-ONLY: captain-replies -->\n%s: Captain-approved route.\n' "$hold" \
+        > "$home/data/pending-decisions.md"
+      ;;
+    unavailable)
+      script=$(decision_hold_with_answer_command "$home" "$condition" unavailable)
+      ;;
+    closed)
+      script=$(decision_hold_with_answer_command "$home" "$condition" closed)
+      ;;
+    empty)
+      write_captain_reply "$home" "$hold" ''
+      ;;
+    *) fail "unknown unreadable-answer condition: $condition" ;;
+  esac
+
+  if [ -n "$script" ]; then
+    if run_falsified_decisions "$home" "$script" resolve "$origin" "$key" \
+      --decision-file "$record" --routed-to "$dependent" \
+      > "$home/$condition.out" 2> "$home/$condition.err"; then
+      fail "resolve accepted the $condition captain-answer condition"
+    fi
+  elif run_decisions "$home" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to "$dependent" \
+    > "$home/$condition.out" 2> "$home/$condition.err"; then
+    fail "resolve accepted the $condition captain-answer condition"
+  fi
+
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" \
+    "the $condition answer condition closed the hold"
+  assert_contains "$show" "held: yes" \
+    "the $condition answer condition released the hold"
+  assert_not_contains "$show" "ATTACKER-SUPPLIED ROUTE" \
+    "the $condition answer condition recorded caller-supplied text"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" "blocked: yes" \
+    "the $condition answer condition cleared the dependent's blocker"
+}
+
+test_resolve_fails_closed_when_current_answer_is_unreadable() {
+  local condition
+  for condition in absent malformed unavailable closed empty; do
+    assert_unreadable_answer_refuses "$condition"
+  done
+  pass "resolve refuses every non-affirmative captain-answer read without changing holds or dependents"
 }
 
 test_resolve_refuses_an_undisclosed_blocked_dependent() {
@@ -951,6 +1037,7 @@ test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
+test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
 test_exact_retry_finishes_routing_after_a_revised_reply

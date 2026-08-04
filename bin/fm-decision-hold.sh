@@ -171,8 +171,10 @@ current_captain_answer() {  # <hold-id>
 
 verify_decision_is_current() {  # <hold-id> <decision>
   local id=$1 decision=$2 answer
-  answer=$(current_captain_answer "$id") || return 0
-  [ -n "$answer" ] || return 0
+  answer=$(current_captain_answer "$id") \
+    || fail "could not affirm the current captain reply for $id"
+  [ -n "$answer" ] \
+    || fail "could not affirm a non-empty current captain reply for $id"
   [ "$answer" = "$decision" ] \
     || fail "captain hold $id has a newer captain reply than the prepared decision record"
 }
