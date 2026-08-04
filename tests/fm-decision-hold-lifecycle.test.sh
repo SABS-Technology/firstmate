@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end tests for durable captain-held decisions discovered by investigations
 # and visual reviews.
+# shellcheck disable=SC2016
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -9,6 +10,10 @@ set -u
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
+CAPTAIN_QUEUE="$ROOT/bin/fm-captain-queue.sh"
+RULING_CHECK="$ROOT/bin/fm-captain-ruling-check.sh"
+DECISION_SKILL="$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md"
+AGENTS="$ROOT/AGENTS.md"
 TMP_ROOT=$(fm_test_tmproot fm-decision-hold)
 TASKS_AXI_BIN=$(command -v tasks-axi || true)
 
@@ -550,6 +555,91 @@ test_resolve_matches_quoted_blocked_by_edges() {
   pass "resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id"
 }
 
+test_detected_ruling_becomes_work_before_hold_closes() {
+  local home origin key hold wake answer record dependent show queue
+  home=$(make_home ruling-round-trip)
+  origin=sample-ruling-review
+  key=route
+  dependent=sample-ruling-implementation
+  mkdir -p "$home/data/$origin" "$home/data/decisions"
+  tasks_in "$home" add "$origin" "Review sample ruling route" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create ruling-round-trip origin"
+  write_origin_meta "$home" "$origin"
+  printf '# Sample ruling review\n\nThe captain must select the route.\n' \
+    > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" "$key" \
+    --title "Choose the sample ruling route" \
+    --reason "captain sample route pending" --repo sample) \
+    || fail "could not create ruling-round-trip hold"
+  run_decisions "$home" complete "$origin" "$key" >/dev/null \
+    || fail "could not complete ruling-round-trip inventory"
+  cat > "$home/data/pending-decisions.md" <<EOF
+# Captain decisions
+
+## ✍️ Your replies
+
+$hold: Use the east route.
+EOF
+
+  wake=$(FM_HOME="$home" "$RULING_CHECK") \
+    || fail "ruling detector failed in the round-trip fixture"
+  [ "$wake" = "captain-ruling $hold" ] \
+    || fail "ruling detector did not identify the held decision: $wake"
+  answer=$(FM_HOME="$home" "$RULING_CHECK" --answer "$hold") \
+    || fail "agent turn could not read the exact captain ruling"
+  [ "$answer" = 'Use the east route.' ] \
+    || fail "agent turn read the wrong captain ruling: $answer"
+
+  record="$home/data/decisions/$hold.md"
+  printf '%s\n' "$answer" > "$record"
+  chmod 0600 "$record"
+  tasks_in "$home" add "$dependent" "Apply the captain-selected sample route" \
+    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null \
+    || fail "agent turn could not create dependent work behind the hold"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to "$dependent" >/dev/null \
+    || fail "agent-authored work and decision record did not close the hold"
+
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "round-trip did not close the captain hold"
+  assert_contains "$show" "Captain decision:\\nUse the east route." \
+    "round-trip did not retain the exact captain ruling"
+  assert_contains "$show" "Routed work:\\n- $dependent" \
+    "round-trip did not retain the dependent work identity"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" "blocked: no" \
+    "dependent work was not released after the decision record became durable"
+  assert_contains "$show" "Decision record: data/decisions/$hold.md" \
+    "dependent work lost its durable decision-record pointer"
+  assert_present "$record" "round-trip removed the on-disk decision record"
+  queue=$(FM_HOME="$home" "$CAPTAIN_QUEUE" --json) \
+    || fail "canonical captain queue failed after round-trip ingestion"
+  printf '%s' "$queue" | jq -e --arg hold "$hold" \
+    'all(.items[]; .id != $hold)' >/dev/null \
+    || fail "closed captain hold remained in the canonical queue: $queue"
+  pass "a detected ruling becomes durable dependent work before its hold closes"
+}
+
+test_ruling_wake_loads_the_single_lifecycle_owner() {
+  assert_grep 'on a `captain-ruling <hold-id>[,<hold-id>...]` `check:` wake' "$AGENTS" \
+    "AGENTS.md does not load the decision owner for captain-ruling wakes"
+  for phrase in \
+    'bin/fm-captain-ruling-check.sh --answer' \
+    'data/decisions/<hold-id>.md' \
+    'tasks-axi add' \
+    '--blocked-by <hold-id>' \
+    'bin/fm-decision-hold.sh resolve' \
+    'Only after `resolve` succeeds'; do
+    assert_grep "$phrase" "$DECISION_SKILL" \
+      "decision lifecycle owner is missing the round-trip instruction '$phrase'"
+  done
+  assert_grep 'A status change is not ruling ingestion' "$DECISION_SKILL" \
+    "decision lifecycle owner permits a status-only close"
+  pass "captain-ruling wakes load the single lifecycle owner and preserve close ordering"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -560,3 +650,5 @@ test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
+test_detected_ruling_becomes_work_before_hold_closes
+test_ruling_wake_loads_the_single_lifecycle_owner

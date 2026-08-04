@@ -28,6 +28,11 @@ It records the decision digest and routed task identities as a retry identity in
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 A failed intermediate step leaves the hold open.
 
+`bin/fm-captain-ruling-check.sh` emits only privacy-safe hold identities from its watcher path.
+Its explicit `--answer <hold-id>` read returns the latest complete answer only while that captain hold is still open and leaves `data/pending-decisions.md` unchanged.
+On that wake, the lifecycle skill owns the semantic agent turn: it reads the origin and key from the hold body, writes the exact answer to `data/decisions/<hold-id>.md`, authors dependent backlog work behind the hold, and delegates closure to `resolve`.
+The resolver remains the only close path, so a status-only change, missing work item, or missing dependency edge cannot close the captain decision.
+
 ## Structured read surfaces
 
 `bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)` and `(hold-kind: captain)` metadata alongside existing backlog fields.
@@ -43,6 +48,7 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Captain-ruling round-trip verification date: 2026-08-03.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -62,6 +68,16 @@ ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
+ok - a detected ruling becomes durable dependent work before its hold closes
+ok - captain-ruling wakes load the single lifecycle owner and preserve close ordering
+
+$ bash tests/fm-captain-ruling-check.test.sh
+ok - one private single-link global check is registered
+ok - new rulings wake once while malformed, unchanged, and resolved ids stay silent
+ok - the check finishes under 5s and leaves pending-decisions.md byte-identical
+ok - an unterminated half-typed reply waits until the line is complete
+ok - active captain holds are accepted on any task kind while other holds stay silent
+ok - answer reader returns the latest complete open ruling without changing captain input
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization preserves strict roles and resolves every blocker compatibly
