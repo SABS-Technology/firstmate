@@ -93,7 +93,6 @@ EOF
   cat > "$home/state/stage-transitions.tsv" <<'EOF'
 ship-a	implementation	2026-08-03T00:00:00Z
 ship-a	validation	2026-08-03T01:00:00Z
-ship-a	paused	BAD
 ship-a-decision-approval	implementation	2026-08-03T00:00:00Z
 scout-b	investigation	2026-08-03T00:00:00Z
 EOF
@@ -382,7 +381,7 @@ EOF
 }
 
 test_stage_corruption_refuses_regression_without_losing_prior_valid_stage() {
-  local home output rc before
+  local home output rc before name row
   home=$(make_fixture truncated-stage-ledger)
   sync_env "$home" >/dev/null || fail "could not seed the tracked-stage journal"
   : > "$home/linear.log"
@@ -393,26 +392,29 @@ test_stage_corruption_refuses_regression_without_losing_prior_valid_stage() {
   rc=$?
   set -e
   expect_code 1 "$rc" "a truncated stage ledger against tracked journal state must refuse"
-  assert_contains "$output" "stage ledger invalid" "truncated ledger refusal was not explicit"
+  assert_contains "$output" "stage ledger" "truncated ledger refusal was not explicit"
   [ "$(line_count "$home/linear.log")" = 0 ] || fail "truncated ledger regressed a tracked issue"
   [ "$(digest "$home/state/linear-projection.json")" = "$before" ] || fail "truncated ledger changed journal bytes"
 
-  home=$(make_fixture unknown-stage)
-  printf 'ship-a\tdeployment\t2026-08-03T03:00:00Z\n' >> "$home/state/stage-transitions.tsv"
-  set +e
-  output=$(sync_env "$home" 2>&1)
-  rc=$?
-  set -e
-  expect_code 1 "$rc" "an unknown future stage must refuse"
-  assert_contains "$output" "stage ledger unknown stage" "unknown future stage was silently skipped"
-  [ "$(line_count "$home/linear.log")" = 0 ] || fail "unknown future stage reached Linear"
-
-  home=$(make_fixture invalid-after-valid-stage)
-  sync_env "$home" >/dev/null || fail "valid stage followed by malformed data did not project"
-  : > "$home/linear.log"
-  sync_env "$home" >/dev/null || fail "malformed line after valid stage lost the prior stage"
-  [ "$(line_count "$home/linear.log")" = 0 ] || fail "malformed line after valid stage changed its projection"
-  pass "stage corruption refuses regression while preserving a prior valid stage"
+  while IFS='|' read -r name row; do
+    home=$(make_fixture "malformed-stage-$name")
+    printf '%b\n' "$row" > "$home/state/stage-transitions.tsv"
+    set +e
+    output=$(sync_env "$home" 2>&1)
+    rc=$?
+    set -e
+    expect_code 1 "$rc" "$name stage row must refuse"
+    assert_contains "$output" "stage ledger" "$name refusal did not identify the stage ledger"
+    [ "$(line_count "$home/linear.log")" = 0 ] || fail "$name stage row reached Linear"
+    assert_absent "$home/state/linear-projection.json" \
+      "$name stage row created a projection journal"
+  done <<'EOF'
+wrong-field-count|ship-a\timplementation
+invalid-task-id|ship/a\timplementation\t2026-08-03T03:00:00Z
+malformed-timestamp|ship-a\timplementation\tBAD
+unknown-stage|ship-a\tdeployment\t2026-08-03T03:00:00Z
+EOF
+  pass "every malformed stage row refuses before transport or journal mutation"
 }
 
 test_native_github_check_totals_keep_incomplete_checks_pending() {

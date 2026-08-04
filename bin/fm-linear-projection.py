@@ -220,10 +220,12 @@ def parse_stages(path):
     for line in regular_text(path).splitlines():
         fields = line.split("\t")
         if len(fields) != 3:
-            continue
+            raise ProjectionError("stage ledger malformed row")
         task_id, stage, at = fields
-        if not ID_RE.fullmatch(task_id) or not STAMP_RE.fullmatch(at):
-            continue
+        if not ID_RE.fullmatch(task_id):
+            raise ProjectionError("stage ledger malformed task")
+        if not STAMP_RE.fullmatch(at):
+            raise ProjectionError("stage ledger malformed timestamp")
         if stage not in STAGES:
             raise ProjectionError("stage ledger unknown stage")
         current[task_id] = stage
