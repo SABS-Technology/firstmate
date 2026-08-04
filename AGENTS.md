@@ -72,6 +72,7 @@ config/herdr-presentation-spaces  optional presence flag for Herdr's default-off
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
+config/linear-projection.json  workspace contract for the optional one-way Linear projection; LOCAL, must stay uncommitted; absent or invalid keeps projection egress fail-closed and never holds the API credential (docs/configuration.md "Linear projection")
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
@@ -79,6 +80,8 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
   projects.md        thin fleet navigation registry; firstmate-private, parsed by fm-project-mode.sh (section 6)
   secondmates.md      secondmate routing table; firstmate-private, maintained by fm-home-seed.sh (section 6)
+  pending-decisions.md  open-captain-decision projection the captain may answer outside chat: fm-pending-decisions-generate.sh owns the generated captain-queue region, and captain replies live only in the append-only reply region
+  decisions/<hold-id>.md  the captain's exact ruling, recorded before fm-decision-hold.sh resolve routes dependent work and closes the decision (docs/decision-hold-lifecycle.md)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
 projects/            cloned repos; gitignored; READ-ONLY for you
@@ -92,6 +95,8 @@ state/               volatile runtime signals; gitignored
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
   captain-ruling.check.sh  generated global registered check for captain replies written outside chat; invokes bin/fm-captain-ruling-check.sh
   .captain-rulings-seen    private durable answer-digest set preventing repeat ruling wakes across polls and restarts
+  stage-transitions.tsv  append-only work-stage ledger written by fm-stage.sh: <task-id>, stage, UTC timestamp; a separate axis from <id>.status, never derived from it, and retained across teardown
+  linear-projection.json  private Linear projection journal: remote ids, source digests, per-item revisions, attachment receipts, and archive tombstones; never a credential or vendor response body (docs/configuration.md "Linear projection")
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
   <id>.pr-poll-registration  private transactional provenance record binding the task, canonical metadata identity, sidecar, and static poll publication
   .pr-check-quarantine/  private non-runnable storage for checks neutralized by the non-executing migration

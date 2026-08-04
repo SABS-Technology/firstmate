@@ -19,6 +19,10 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-backlog-handoff.sh`  | Validate and delegate queued backlog-item moves into a secondmate home               |
 | `fm-decision-hold.sh`    | Create, verify, complete, and resolve durable captain-held decisions                 |
 | `fm-captain-ruling-check.sh` | Install and run the global registered detector, or read the current answer for one open captain decision |
+| `fm-captain-queue.sh`    | Print the canonical read-only union of captain-held work, flagging asymmetric membership as an orphan (schema `fm-captain-queue.v1`) |
+| `fm-pending-decisions-generate.sh` | Regenerate the captain-queue region of `data/pending-decisions.md` while preserving its append-only reply region |
+| `fm-stage.sh`            | Record and read the append-only work-stage axis, independent of crew supervision status |
+| `fm-linear-projection.sh` | Run the one-way fail-closed Linear projection sync or its separate unauthenticated live schema check |
 | `fm-brief.sh`            | Scaffold ship, scout, secondmate-charter, and Herdr-lab briefs                       |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |
