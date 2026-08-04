@@ -628,6 +628,54 @@ EOF
   pass "a detected ruling becomes durable dependent work before its hold closes"
 }
 
+test_rehold_requires_canonical_identity_fields() {
+  local home origin=sample-collision-review key=route hold title show queue
+  hold="$origin-decision-$key"
+  title="Choose the collision route"
+
+  home=$(make_home malformed-hold-identity)
+  mkdir -p "$home/data/$origin"
+  write_origin_meta "$home" "$origin"
+  tasks_in "$home" add "$hold" "$title" --kind captain --repo sample \
+    --body "Not canonical lifecycle data." >/dev/null
+  if run_decisions "$home" hold "$origin" "$key" --title "$title" \
+    --reason "captain route pending" --repo sample \
+    > "$home/malformed.out" 2> "$home/malformed.err"; then
+    fail "re-hold accepted an identity with missing canonical body fields"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "held: no" "malformed identity was activated before refusal"
+
+  home=$(make_home conflicting-hold-identity)
+  mkdir -p "$home/data/$origin"
+  write_origin_meta "$home" "$origin"
+  tasks_in "$home" add "$hold" "$title" --kind captain --repo sample \
+    --body $'Origin: different-origin\nDecision key: route\nState: awaiting captain decision.' >/dev/null
+  if run_decisions "$home" hold "$origin" "$key" --title "$title" \
+    --reason "captain route pending" --repo sample \
+    > "$home/conflicting.out" 2> "$home/conflicting.err"; then
+    fail "re-hold accepted conflicting canonical identity fields"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "held: no" "conflicting identity was activated before refusal"
+
+  home=$(make_home canonical-hold-identity)
+  mkdir -p "$home/data/$origin"
+  write_origin_meta "$home" "$origin"
+  run_decisions "$home" hold "$origin" "$key" --title "$title" \
+    --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create canonical hold identity"
+  run_decisions "$home" hold "$origin" "$key" --title "$title" \
+    --reason "captain route pending" --repo sample >/dev/null \
+    || fail "canonical existing hold was not idempotent"
+  queue=$(FM_HOME="$home" "$CAPTAIN_QUEUE" --json) \
+    || fail "canonical queue failed for idempotent hold"
+  printf '%s' "$queue" | jq -e --arg hold "$hold" '
+    [.items[] | select(.id == $hold and .replyable == true)] | length == 1
+  ' >/dev/null || fail "canonical idempotent hold was not exactly once and replyable: $queue"
+  pass "re-hold rejects malformed identity collisions and preserves canonical idempotence"
+}
+
 make_ruling_home() {  # <name> <origin> <key> <answer>
   local name=$1 origin=$2 key=$3 answer=$4 home hold
   home=$(make_home "$name")
@@ -1037,6 +1085,7 @@ test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
+test_rehold_requires_canonical_identity_fields
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling

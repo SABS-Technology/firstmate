@@ -287,6 +287,15 @@ verify_resolution_identity() {
     || fail "captain hold $id records different routed work"
 }
 
+verify_hold_identity() {  # <hold-id> <origin-id> <decision-key> <body>
+  local id=$1 origin=$2 key=$3 body=$4 expected
+  expected=$(printf '"Origin: %s\\nDecision key: %s\\n' "$origin" "$key")
+  case "$body" in
+    "$expected"*) return 0 ;;
+  esac
+  fail "existing captain hold $id has missing or conflicting canonical identity fields"
+}
+
 command_id() {
   [ "$#" -eq 2 ] || { usage >&2; exit 2; }
   hold_id "$1" "$2"
@@ -317,9 +326,11 @@ command_hold() {
     state=$(show_field "$show" state)
     kind=$(show_field "$show" kind)
     existing_title=$(show_field "$show" title)
+    body=$(show_field "$show" body)
     [ "$state" != "done" ] || fail "captain decision $id is already durably resolved; use a new decision key for a new decision"
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
+    verify_hold_identity "$id" "$origin" "$key" "$body"
   else
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
