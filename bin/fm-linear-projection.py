@@ -209,8 +209,11 @@ def parse_stages(path):
         if len(fields) != 3:
             continue
         task_id, stage, at = fields
-        if ID_RE.fullmatch(task_id) and stage in STAGES and STAMP_RE.fullmatch(at):
-            current[task_id] = stage
+        if not ID_RE.fullmatch(task_id) or not STAMP_RE.fullmatch(at):
+            continue
+        if stage not in STAGES:
+            raise ProjectionError("stage ledger unknown stage")
+        current[task_id] = stage
     return current
 
 
@@ -413,6 +416,8 @@ def sync(root, home, data_dir, state_dir, config_dir):
     journal = load_state(journal_path, config["workspace_id"])
     namespace = uuid.UUID(config["workspace_id"])
     validate_state(journal, namespace)
+    if not stages and any(record["issue_digest"] for record in journal["items"].values()):
+        raise ProjectionError("stage ledger invalid for tracked projection")
     entities = build_entities(items, queue, stages, state_dir)
     token = os.environ["LINEAR_API_KEY"]
     summary = {"schema": "fm-linear-projection-run.v1", "source_count": len(entities), "created": 0, "updated": 0, "linked": 0, "archived": 0, "unchanged": 0, "absent": 0}

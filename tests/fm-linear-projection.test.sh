@@ -93,7 +93,7 @@ EOF
   cat > "$home/state/stage-transitions.tsv" <<'EOF'
 ship-a	implementation	2026-08-03T00:00:00Z
 ship-a	validation	2026-08-03T01:00:00Z
-ship-a	paused	2026-08-03T02:00:00Z
+ship-a	paused	BAD
 ship-a-decision-approval	implementation	2026-08-03T00:00:00Z
 scout-b	investigation	2026-08-03T00:00:00Z
 EOF
@@ -333,6 +333,40 @@ EOF
   pass "complete journal preflight refuses malformed records before any mutation"
 }
 
+test_stage_corruption_refuses_regression_without_losing_prior_valid_stage() {
+  local home output rc before
+  home=$(make_fixture truncated-stage-ledger)
+  sync_env "$home" >/dev/null || fail "could not seed the tracked-stage journal"
+  : > "$home/linear.log"
+  printf 'ship-a\tcomplete\tBAD\n' > "$home/state/stage-transitions.tsv"
+  before=$(digest "$home/state/linear-projection.json")
+  set +e
+  output=$(sync_env "$home" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a truncated stage ledger against tracked journal state must refuse"
+  assert_contains "$output" "stage ledger invalid" "truncated ledger refusal was not explicit"
+  [ "$(line_count "$home/linear.log")" = 0 ] || fail "truncated ledger regressed a tracked issue"
+  [ "$(digest "$home/state/linear-projection.json")" = "$before" ] || fail "truncated ledger changed journal bytes"
+
+  home=$(make_fixture unknown-stage)
+  printf 'ship-a\tdeployment\t2026-08-03T03:00:00Z\n' >> "$home/state/stage-transitions.tsv"
+  set +e
+  output=$(sync_env "$home" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "an unknown future stage must refuse"
+  assert_contains "$output" "stage ledger unknown stage" "unknown future stage was silently skipped"
+  [ "$(line_count "$home/linear.log")" = 0 ] || fail "unknown future stage reached Linear"
+
+  home=$(make_fixture invalid-after-valid-stage)
+  sync_env "$home" >/dev/null || fail "valid stage followed by malformed data did not project"
+  : > "$home/linear.log"
+  sync_env "$home" >/dev/null || fail "malformed line after valid stage lost the prior stage"
+  [ "$(line_count "$home/linear.log")" = 0 ] || fail "malformed line after valid stage changed its projection"
+  pass "stage corruption refuses regression while preserving a prior valid stage"
+}
+
 test_transport_failure_never_emits_credential() {
   local home output rc
   home=$(make_fixture credential-redaction)
@@ -388,6 +422,7 @@ test_pr_links_require_canonical_metadata
 test_unchanged_second_run_is_mutation_free
 test_archive_boundary_never_resurrects_completed_item
 test_journal_preflight_refuses_all_malformed_records_before_transport
+test_stage_corruption_refuses_regression_without_losing_prior_valid_stage
 test_transport_failure_never_emits_credential
 test_live_schema_probe_is_opt_in_and_default_run_is_offline
 
