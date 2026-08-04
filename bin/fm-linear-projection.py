@@ -270,9 +270,21 @@ def github_status(url):
             raise ProjectionError("github status unavailable")
         state = "draft" if draft_match.group(1) == "yes" else state_match.group(1).lower()
         raw_checks = checks_match.group(1) if checks_match else ""
-        failed = re.search(r"(\d+) failed", raw_checks)
-        passed = re.search(r"(\d+) passed", raw_checks)
-        checks = "failing" if failed and int(failed.group(1)) else "green" if passed and int(passed.group(1)) else "none"
+        counts = {
+            name: int(match.group(1)) if (match := re.search(rf"(\d+) {name}", raw_checks)) else 0
+            for name in ("passed", "failed", "skipped")
+        }
+        total_match = re.search(r"(\d+) total", raw_checks)
+        total = int(total_match.group(1)) if total_match else None
+        terminal = sum(counts.values())
+        if counts["failed"]:
+            checks = "failing"
+        elif total is None:
+            checks = "pending" if terminal else "none"
+        elif total > terminal:
+            checks = "pending"
+        else:
+            checks = "green" if total else "none"
     if state not in {"open", "closed", "merged", "draft"} or checks not in {"green", "failing", "pending", "none"}:
         raise ProjectionError("github status unavailable")
     return {"state": state, "checks": checks}

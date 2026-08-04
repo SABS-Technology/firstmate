@@ -119,6 +119,20 @@ sync_env() { # <home> [command]
   "$PROJECTION" "$command"
 }
 
+sync_env_native_github() { # <home> <fakebin>
+  local home=$1 fakebin=$2
+  PATH="$fakebin:$PATH" \
+  FM_HOME="$home" \
+  FM_LINEAR_PROJECTION_ENABLED=1 \
+  LINEAR_API_KEY="$TOKEN" \
+  FM_LINEAR_TRANSPORT="$FAKE_LINEAR" \
+  FM_CAPTAIN_QUEUE_BIN="$FAKE_QUEUE" \
+  FM_FAKE_QUEUE_JSON="$home/queue.json" \
+  FAKE_LINEAR_LOG="$home/linear.log" \
+  FAKE_QUEUE_CALLS="$home/queue.calls" \
+  "$PROJECTION" sync
+}
+
 digest() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -367,6 +381,31 @@ test_stage_corruption_refuses_regression_without_losing_prior_valid_stage() {
   pass "stage corruption refuses regression while preserving a prior valid stage"
 }
 
+test_native_github_check_totals_keep_incomplete_checks_pending() {
+  local home fakebin log
+  home=$(make_fixture pending-github-checks)
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh-axi" <<'EOF'
+#!/usr/bin/env bash
+cat <<'OUT'
+  state: OPEN
+  draft: no
+  checks: "1 passed, 0 failed, 0 skipped, 3 total"
+OUT
+EOF
+  chmod +x "$fakebin/gh-axi"
+  sync_env_native_github "$home" "$fakebin" >/dev/null \
+    || fail "native GitHub pending-check fixture failed"
+  log=$(jq -s . "$home/linear.log")
+  printf '%s' "$log" | jq -e '
+    any(.[] | select(.operationName == "CreateIssue");
+      .variables.input.description
+      | contains("GitHub PR status: open; checks=pending"))
+  ' >/dev/null || fail "incomplete native GitHub checks were projected as green: $log"
+  pass "native GitHub totals keep incomplete nonfailing checks pending"
+}
+
 test_transport_failure_never_emits_credential() {
   local home output rc
   home=$(make_fixture credential-redaction)
@@ -423,6 +462,7 @@ test_unchanged_second_run_is_mutation_free
 test_archive_boundary_never_resurrects_completed_item
 test_journal_preflight_refuses_all_malformed_records_before_transport
 test_stage_corruption_refuses_regression_without_losing_prior_valid_stage
+test_native_github_check_totals_keep_incomplete_checks_pending
 test_transport_failure_never_emits_credential
 test_live_schema_probe_is_opt_in_and_default_run_is_offline
 
