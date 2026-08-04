@@ -90,8 +90,12 @@ def load_config(config_dir):
         value = json.loads(regular_text(path, required=True))
     except (json.JSONDecodeError, UnicodeError):
         raise ProjectionError("workspace configuration invalid") from None
-    expected = {"schema", "workspace_id", "team_id", "untracked_state_id", "stage_state_ids"}
-    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "fm-linear-projection-config.v1":
+    expected = {"schema", "workspace_id", "team_id", "untracked_state_id", "stage_state_ids", "approved_destination"}
+    if not isinstance(value, dict) or value.get("schema") != "fm-linear-projection-config.v1":
+        raise ProjectionError("workspace configuration invalid")
+    if "approved_destination" not in value:
+        raise ProjectionError("approved destination attestation missing")
+    if set(value) != expected:
         raise ProjectionError("workspace configuration invalid")
     try:
         uuid.UUID(value["workspace_id"])
@@ -104,6 +108,15 @@ def load_config(config_dir):
     ids.extend(mapping.values())
     if any(not isinstance(item, str) or not item or "\n" in item for item in ids):
         raise ProjectionError("workspace configuration invalid")
+    approved = value.get("approved_destination")
+    if (
+        not isinstance(approved, dict)
+        or set(approved) != {"attested", "workspace_id", "team_id"}
+        or approved.get("attested") is not True
+        or approved.get("workspace_id") != value["workspace_id"]
+        or approved.get("team_id") != value["team_id"]
+    ):
+        raise ProjectionError("approved destination attestation invalid")
     return value
 
 

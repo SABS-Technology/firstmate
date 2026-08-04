@@ -41,7 +41,8 @@ The file format is unchanged in both modes; tasks-axi and manual edits produce t
 ## Linear projection (config/linear-projection.json)
 
 `config/linear-projection.json` is the local, gitignored workspace contract for the one-way Linear projection owned by `bin/fm-linear-projection.sh`.
-The file must contain exactly `schema`, `workspace_id`, `team_id`, `untracked_state_id`, and `stage_state_ids`; `schema` is `fm-linear-projection-config.v1`, `workspace_id` is a UUID, and `stage_state_ids` maps every stage emitted by `bin/fm-stage.sh` to the target team's Linear workflow-state id.
+The file must contain exactly `schema`, `workspace_id`, `team_id`, `untracked_state_id`, `stage_state_ids`, and `approved_destination`; `schema` is `fm-linear-projection-config.v1`, `workspace_id` is a UUID, and `stage_state_ids` maps every stage emitted by `bin/fm-stage.sh` to the target team's Linear workflow-state id.
+`approved_destination` must contain exactly `attested: true`, `workspace_id`, and `team_id`, and both ids must equal the mutation destination in the same config before any transport can run.
 The API credential remains only in `LINEAR_API_KEY` and must never be placed in this file.
 Projection egress is fail-closed unless `FM_LINEAR_PROJECTION_ENABLED=1`, the credential is present, and this complete workspace contract is valid.
 The projection journal is private `state/linear-projection.json`; it stores deterministic remote ids, source digests, monotonic per-item revisions, attachment receipts, and archive tombstones, but no credential or vendor response body.

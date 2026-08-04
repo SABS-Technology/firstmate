@@ -70,7 +70,7 @@ chmod +x "$FAKE_QUEUE"
 write_config() { # <home>
   mkdir -p "$1/config"
   cat > "$1/config/linear-projection.json" <<EOF
-{"schema":"fm-linear-projection-config.v1","workspace_id":"$WORKSPACE_ID","team_id":"team-1","untracked_state_id":"state-untracked","stage_state_ids":{"implementation":"state-implementation","investigation":"state-investigation","validation":"state-validation","pr-open":"state-pr-open","merged":"state-merged","complete":"state-complete"}}
+{"schema":"fm-linear-projection-config.v1","workspace_id":"$WORKSPACE_ID","team_id":"team-1","untracked_state_id":"state-untracked","stage_state_ids":{"implementation":"state-implementation","investigation":"state-investigation","validation":"state-validation","pr-open":"state-pr-open","merged":"state-merged","complete":"state-complete"},"approved_destination":{"attested":true,"workspace_id":"$WORKSPACE_ID","team_id":"team-1"}}
 EOF
 }
 
@@ -172,6 +172,40 @@ test_prerequisites_fail_closed_before_transport() {
   assert_contains "$out" "linear-projection.json" "unconfigured projection did not name its workspace config"
   [ "$(line_count "$home/linear.log")" = 0 ] || fail "unconfigured projection reached Linear"
   pass "each missing prerequisite fails closed before any network transport"
+}
+
+test_approved_destination_attestation_gates_sensitive_egress() {
+  local home out rc
+  home=$(make_fixture missing-approved-destination)
+  jq 'del(.approved_destination)' "$home/config/linear-projection.json" \
+    > "$home/config/linear-projection.json.tmp"
+  mv "$home/config/linear-projection.json.tmp" "$home/config/linear-projection.json"
+  perl -0pi -e 's/Build the projected feature/Patient Jane Doe MRN 123456: oncology follow-up/' \
+    "$home/data/backlog.md"
+  set +e
+  out=$(sync_env "$home" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "an unattested destination must refuse sensitive projection data"
+  assert_contains "$out" "approved destination attestation" \
+    "unattested destination refusal did not name the missing safety gate"
+  [ "$(line_count "$home/linear.log")" = 0 ] \
+    || fail "unattested destination invoked the Linear transport"
+
+  home=$(make_fixture mismatched-approved-destination)
+  jq '.approved_destination.team_id = "different-team"' \
+    "$home/config/linear-projection.json" > "$home/config/linear-projection.json.tmp"
+  mv "$home/config/linear-projection.json.tmp" "$home/config/linear-projection.json"
+  set +e
+  out=$(sync_env "$home" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a destination attestation for another team must refuse"
+  assert_contains "$out" "approved destination attestation" \
+    "mismatched destination refusal did not name the binding failure"
+  [ "$(line_count "$home/linear.log")" = 0 ] \
+    || fail "a token plus mismatched destination attestation invoked the transport"
+  pass "approved workspace and team attestation gates all projection egress"
 }
 
 test_entities_keep_stage_and_pr_axes_and_link_decisions() {
@@ -456,6 +490,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found"; exit 0; }
 
 test_prerequisites_fail_closed_before_transport
+test_approved_destination_attestation_gates_sensitive_egress
 test_entities_keep_stage_and_pr_axes_and_link_decisions
 test_pr_links_require_canonical_metadata
 test_unchanged_second_run_is_mutation_free
