@@ -8,13 +8,15 @@
 # digest of each seen id/answer pair in state/.captain-rulings-seen, and prints
 # one `captain-ruling <id>[,<id>...]` line when a new ruling needs an agent turn.
 # It never changes pending-decisions.md and never resolves a hold.
+# `--answer <id>` gives the handling agent the latest complete answer for one
+# still-open captain hold without exposing answer text in the watcher wake.
 #
 # `--install` atomically publishes the home-bound mode-0700 shim and binds its
 # bytes through fm-check-register.sh.
 # Bootstrap calls this only while the session lock is held, so the check shares
 # fm-watch.sh's existing FM_CHECK_INTERVAL cadence and FM_CHECK_TIMEOUT bound.
 #
-# Usage: fm-captain-ruling-check.sh [--install]
+# Usage: fm-captain-ruling-check.sh [--install | --answer <id>]
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -157,8 +159,33 @@ detect_rulings() {
   printf 'captain-ruling %s\n' "$ids"
 }
 
+answer_for_hold() {
+  local id=${1:-} candidate_id candidate_answer candidates answer=''
+  [ "$#" -eq 1 ] || return 2
+  fm_pr_task_id_valid "$id" || return 2
+  [ -f "$PENDING" ] && [ ! -L "$PENDING" ] || {
+    printf 'fm-captain-ruling-check: pending decisions are unavailable\n' >&2
+    return 1
+  }
+  captain_hold_is_open "$id" || {
+    printf 'fm-captain-ruling-check: captain hold is not open: %s\n' "$id" >&2
+    return 1
+  }
+  candidates=$(reply_candidates)
+  while IFS=$'\t' read -r candidate_id candidate_answer; do
+    [ "$candidate_id" = "$id" ] || continue
+    answer=$candidate_answer
+  done <<< "$candidates"
+  [ -n "$answer" ] || {
+    printf 'fm-captain-ruling-check: no complete answer for captain hold: %s\n' "$id" >&2
+    return 1
+  }
+  printf '%s\n' "$answer"
+}
+
 case "${1:-}" in
   '') detect_rulings ;;
   --install) [ "$#" -eq 1 ] || exit 2; install_check ;;
+  --answer) shift; answer_for_hold "$@" ;;
   *) exit 2 ;;
 esac

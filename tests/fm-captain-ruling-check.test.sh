@@ -101,6 +101,12 @@ run_check() {
   FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" "$CHECK"
 }
 
+read_answer() {
+  local home=$1 fakebin=$2 id=$3
+  FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "$CHECK" --answer "$id"
+}
+
 test_global_install_is_registered() {
   local world home fakebin count
   world=$(make_home install); home=${world%%|*}; fakebin=${world#*|}
@@ -180,7 +186,42 @@ test_partial_final_line_waits_for_completion() {
   pass "an unterminated half-typed reply waits until the line is complete"
 }
 
+test_answer_reads_latest_complete_open_ruling_without_mutation() {
+  local world home fakebin pending before after answer
+  world=$(make_home answer); home=${world%%|*}; fakebin=${world#*|}
+  pending="$home/data/pending-decisions.md"
+  cat > "$pending" <<'EOF'
+# Pending decisions
+
+## ✍️ Your replies
+
+review-decision-route: Use route north.
+review-decision-access: Restrict access.
+review-decision-route: Use route south instead.
+closed-decision: Ignore a closed answer.
+EOF
+  printf '%s' 'review-decision-route: unfinished replacement' >> "$pending"
+
+  before=$(shasum -a 256 "$pending" | awk '{print $1}')
+  answer=$(read_answer "$home" "$fakebin" review-decision-route) \
+    || fail "answer reader failed for an active captain hold"
+  [ "$answer" = 'Use route south instead.' ] \
+    || fail "answer reader did not return the latest complete ruling: $answer"
+  after=$(shasum -a 256 "$pending" | awk '{print $1}')
+  [ "$before" = "$after" ] || fail "answer reader mutated pending-decisions.md"
+  assert_absent "$home/state/.captain-rulings-seen" \
+    "answer reader mutated ruling-notification state"
+  if read_answer "$home" "$fakebin" closed-decision > "$home/closed.out" 2> "$home/closed.err"; then
+    fail "answer reader accepted a closed captain decision"
+  fi
+  if read_answer "$home" "$fakebin" missing-decision > "$home/missing.out" 2> "$home/missing.err"; then
+    fail "answer reader accepted an absent captain decision"
+  fi
+  pass "answer reader returns the latest complete open ruling without changing captain input"
+}
+
 test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
 test_partial_final_line_waits_for_completion
 test_captain_hold_on_task_kind_is_detected
+test_answer_reads_latest_complete_open_ruling_without_mutation
