@@ -105,6 +105,33 @@ test_blocked_ordinary_hold_is_enumerated_once() {
   pass "blocked ordinary captain hold appears once while blocker readiness stays separate"
 }
 
+test_open_in_flight_holds_are_deduplicated_and_done_is_excluded() {
+  local home json
+  home=$(make_fixture active-states)
+  tasks_in "$home" add inflight-captain "In-flight captain-kind hold" \
+    --kind captain --repo firstmate --start >/dev/null
+  tasks_in "$home" hold inflight-captain --reason "captain ruling pending" --kind captain >/dev/null
+  tasks_in "$home" add inflight-ordinary "In-flight ordinary-kind hold" \
+    --kind task --repo firstmate --start >/dev/null
+  tasks_in "$home" hold inflight-ordinary --reason "captain ruling pending" --kind captain >/dev/null
+  tasks_in "$home" add done-captain "Completed captain hold" \
+    --kind captain --repo firstmate >/dev/null
+  tasks_in "$home" hold done-captain --reason "captain ruling completed" --kind captain >/dev/null
+  tasks_in "$home" "done" done-captain >/dev/null
+
+  json=$(query_json "$home") || fail "canonical active-state query failed: $json"
+  printf '%s' "$json" | jq -e '
+    ([.items[] | select(.id == "inflight-captain")] | length) == 1
+      and ([.items[] | select(.id == "inflight-ordinary")] | length) == 1
+      and ([.items[] | select(.id == "done-captain")] | length) == 0
+      and (.items[] | select(.id == "inflight-captain")
+        | .found_by == ["list_kind_captain","list_state_held"])
+      and (.items[] | select(.id == "inflight-ordinary")
+        | .found_by == ["list_state_held"])
+  ' >/dev/null || fail "active captain holds were omitted, duplicated, or mixed with Done: $json"
+  pass "queued and in-flight hold discovery is exact while Done stays excluded"
+}
+
 test_json_contract_carries_required_fields() {
   local home json
   home=$(make_fixture json)
@@ -168,6 +195,7 @@ test_orphans_are_impossible_to_miss_and_read_only() {
 test_union_includes_each_one_sided_failure_mode
 test_union_deduplicates_two_sided_item
 test_blocked_ordinary_hold_is_enumerated_once
+test_open_in_flight_holds_are_deduplicated_and_done_is_excluded
 test_json_contract_carries_required_fields
 test_repo_aliases_normalize_without_backlog_writes
 test_orphans_are_impossible_to_miss_and_read_only

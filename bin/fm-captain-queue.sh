@@ -4,7 +4,7 @@
 # `tasks-axi ready --include-held` finds active unblocked captain holds but misses
 # blocked work. `tasks-axi list --kind captain` finds captain-kind items but
 # misses captain holds on another task kind. `tasks-axi list --state held`
-# supplies the queued held-state view needed for blocked ordinary-kind holds.
+# supplies the active held-state view needed for blocked ordinary-kind holds.
 # This command unions all three views by task id and reports mismatches between
 # active captain holds and captain-kind items as orphans. It never repairs holds
 # or changes backlog data.
@@ -82,6 +82,13 @@ valid_slug() { # <value>
   esac
 }
 
+active_state() { # <state>
+  case "$1" in
+    queued|in_flight) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 FORMAT=human
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -118,15 +125,15 @@ while IFS= read -r id; do
   in_list=false
   in_held=false
   if grep -Fqx -- "$id" "$TMP_DIR/ready.ids" \
-    && [ "$state" = queued ] && [ "$held" = yes ] && [ "$hold_kind" = captain ]; then
+    && active_state "$state" && [ "$held" = yes ] && [ "$hold_kind" = captain ]; then
     in_ready=true
   fi
   if grep -Fqx -- "$id" "$TMP_DIR/list.ids" \
-    && [ "$state" = queued ] && [ "$kind" = captain ]; then
+    && active_state "$state" && [ "$kind" = captain ]; then
     in_list=true
   fi
   if grep -Fqx -- "$id" "$TMP_DIR/held.ids" \
-    && [ "$state" = queued ] && [ "$held" = yes ] && [ "$hold_kind" = captain ]; then
+    && active_state "$state" && [ "$held" = yes ] && [ "$hold_kind" = captain ]; then
     in_held=true
   fi
   [ "$in_ready" = true ] || [ "$in_list" = true ] || [ "$in_held" = true ] || continue
