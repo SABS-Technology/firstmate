@@ -579,7 +579,9 @@ test_detected_ruling_becomes_work_before_hold_closes() {
 
 ## ✍️ Your replies
 
+<!-- BEGIN APPEND-ONLY: captain-replies -->
 $hold: Use the east route.
+<!-- END APPEND-ONLY: captain-replies -->
 EOF
 
   wake=$(FM_HOME="$home" "$RULING_CHECK") \
@@ -650,7 +652,9 @@ write_captain_reply() {  # <home> <hold> <answer>
 
 ## ✍️ Your replies
 
+<!-- BEGIN APPEND-ONLY: captain-replies -->
 $2: $3
+<!-- END APPEND-ONLY: captain-replies -->
 EOF
 }
 

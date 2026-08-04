@@ -7,6 +7,19 @@ set -u
 
 CHECK="$ROOT/bin/fm-captain-ruling-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-captain-ruling-check-tests)
+REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
+REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
+
+# Appends one reply line inside the append-only region, exactly where
+# bin/fm-pending-decisions-generate.sh puts generated reply prefixes.
+append_reply() { # <pending> <line>
+  local pending=$1 line=$2 tmp="$1.append"
+  awk -v end="$REPLY_END" -v line="$line" '
+    $0 == end { print line }
+    { print }
+  ' "$pending" > "$tmp" || fail "could not stage a reply append"
+  mv "$tmp" "$pending" || fail "could not append a reply"
+}
 
 file_mode() {
   if [ "$(uname)" = Darwin ]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi
@@ -78,8 +91,10 @@ test_captain_hold_on_task_kind_is_detected() {
 
 ## ✍️ Your replies
 
+<!-- BEGIN APPEND-ONLY: captain-replies -->
 spec-canonicity-policy: approve code and tests as canonical
 no-active-captain-hold: this must stay silent
+<!-- END APPEND-ONLY: captain-replies -->
 EOF
 
   out=$(run_check "$home" "$fakebin") || fail "task-kind captain-hold check failed"
@@ -141,10 +156,12 @@ Choose the access policy.
 
 ## ✍️ Your replies
 
+<!-- BEGIN APPEND-ONLY: captain-replies -->
 <!-- Reply as <id>: <answer>. -->
 review-decision-route:
 unknown-decision: ignore this
 closed-decision: ignore this too
+<!-- END APPEND-ONLY: captain-replies -->
 EOF
 
   out=$(run_check "$home" "$fakebin") || fail "empty-zone check failed"
@@ -152,7 +169,7 @@ EOF
   out=$(run_check "$home" "$fakebin") || fail "unchanged empty-zone check failed"
   [ -z "$out" ] || fail "unchanged empty-zone input woke the detector: $out"
 
-  printf '%s\n' 'review-decision-route: Use route north.' >> "$pending"
+  append_reply "$pending" 'review-decision-route: Use route north.'
   before=$(shasum -a 256 "$pending" | awk '{print $1}')
   started=$SECONDS
   out=$(run_check "$home" "$fakebin") || fail "new-ruling check failed"
@@ -172,18 +189,65 @@ EOF
   pass "the check finishes under 5s and leaves pending-decisions.md byte-identical"
 }
 
-test_partial_final_line_waits_for_completion() {
+test_partial_reply_region_waits_for_completion() {
   local world home fakebin pending out
   world=$(make_home partial); home=${world%%|*}; fakebin=${world#*|}
   pending="$home/data/pending-decisions.md"
-  printf '# Pending decisions\n\n## ✍️ Your replies\nreview-decision-access: Restrict' > "$pending"
-  out=$(run_check "$home" "$fakebin") || fail "partial-line check failed"
-  [ -z "$out" ] || fail "unterminated half-typed line woke the detector: $out"
-  printf '%s\n' ' access.' >> "$pending"
-  out=$(run_check "$home" "$fakebin") || fail "completed-line check failed"
+  printf '# Pending decisions\n\n## ✍️ Your replies\n%s\nreview-decision-access: Restrict' \
+    "$REPLY_BEGIN" > "$pending"
+  out=$(run_check "$home" "$fakebin") || fail "partial-region check failed"
+  [ -z "$out" ] || fail "half-written reply region woke the detector: $out"
+
+  printf '%s\n' " access.$REPLY_END" >> "$pending"
+  out=$(run_check "$home" "$fakebin") || fail "glued-marker check failed"
+  [ -z "$out" ] || fail "a reply glued to a malformed end marker woke the detector: $out"
+
+  printf '# Pending decisions\n\n## ✍️ Your replies\n%s\nreview-decision-access: Restrict access.\n%s\n' \
+    "$REPLY_BEGIN" "$REPLY_END" > "$pending"
+  out=$(run_check "$home" "$fakebin") || fail "completed-region check failed"
   [ "$out" = 'captain-ruling review-decision-access' ] \
-    || fail "completed line was not detected: $out"
-  pass "an unterminated half-typed reply waits until the line is complete"
+    || fail "completed reply region was not detected: $out"
+  pass "a half-written or malformed reply region waits until the markers close it"
+}
+
+test_detection_survives_heading_moves_and_renames() {
+  local world home fakebin pending out answer
+  world=$(make_home heading-drift); home=${world%%|*}; fakebin=${world#*|}
+  pending="$home/data/pending-decisions.md"
+  cat > "$pending" <<'EOF'
+# Pending decisions
+
+## 🧭 Captain rulings
+
+Prose the captain is free to rewrite.
+
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+spec-canonicity-policy: approve code and tests as canonical
+<!-- END APPEND-ONLY: captain-replies -->
+
+## ✍️ Your replies
+
+review-decision-route: this decoy sits outside the append-only region
+EOF
+
+  out=$(run_check "$home" "$fakebin") || fail "renamed-heading check failed"
+  [ "$out" = 'captain-ruling spec-canonicity-policy' ] \
+    || fail "renaming or moving the heading changed which replies are detected: $out"
+  answer=$(read_answer "$home" "$fakebin" spec-canonicity-policy) \
+    || fail "answer reader failed after the heading moved"
+  [ "$answer" = 'approve code and tests as canonical' ] \
+    || fail "answer reader read outside the append-only region: $answer"
+
+  cat > "$pending" <<'EOF'
+# Pending decisions
+
+## ✍️ Your replies
+
+spec-canonicity-policy: approve code and tests as canonical
+EOF
+  out=$(run_check "$home" "$fakebin") || fail "markerless check failed"
+  [ -z "$out" ] || fail "a heading without the append-only markers woke the detector: $out"
+  pass "detection follows the append-only markers, not any heading"
 }
 
 test_answer_reads_latest_complete_open_ruling_without_mutation() {
@@ -195,12 +259,14 @@ test_answer_reads_latest_complete_open_ruling_without_mutation() {
 
 ## ✍️ Your replies
 
+<!-- BEGIN APPEND-ONLY: captain-replies -->
 review-decision-route: Use route north.
 review-decision-access: Restrict access.
 review-decision-route: Use route south instead.
 closed-decision: Ignore a closed answer.
+<!-- END APPEND-ONLY: captain-replies -->
 EOF
-  printf '%s' 'review-decision-route: unfinished replacement' >> "$pending"
+  printf '%s' 'review-decision-route: this trailing draft sits outside the region' >> "$pending"
 
   before=$(shasum -a 256 "$pending" | awk '{print $1}')
   answer=$(read_answer "$home" "$fakebin" review-decision-route) \
@@ -222,6 +288,7 @@ EOF
 
 test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
-test_partial_final_line_waits_for_completion
+test_partial_reply_region_waits_for_completion
+test_detection_survives_heading_moves_and_renames
 test_captain_hold_on_task_kind_is_detected
 test_answer_reads_latest_complete_open_ruling_without_mutation

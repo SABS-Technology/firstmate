@@ -49,6 +49,7 @@ Firstmate records remain authoritative: the projection reads the canonical `fm-c
 GitHub pull requests are Linear attachments with `linkKind: links`; the projection never supplies `parentId`, so captain decisions remain peer issues linked to their PRs rather than PR sub-items.
 After a workspace exists, the live handoff is one command with the local config in place: `FM_LINEAR_PROJECTION_ENABLED=1 LINEAR_API_KEY=<key> bin/fm-linear-projection.sh sync`.
 Run `bin/fm-linear-projection.sh schema-check` separately to perform the explicit unauthenticated live-schema validation without enabling projection egress.
+Its regression is opt-in for the same reason: `FM_LINEAR_LIVE_SCHEMA=1 tests/fm-linear-schema-check-live.test.sh` reaches Linear, while the default suite runs `tests/fm-linear-projection.test.sh` entirely offline.
 
 ## Runtime backend (config/backend / FM_BACKEND)
 

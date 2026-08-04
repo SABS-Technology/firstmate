@@ -7,6 +7,7 @@ set -eu
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 PROJECTION="$ROOT/bin/fm-linear-projection.sh"
+LIVE_SCHEMA_TEST="$ROOT/tests/fm-linear-schema-check-live.test.sh"
 TMP_ROOT=$(fm_test_tmproot fm-linear-projection)
 mkdir -p "$TMP_ROOT"
 WORKSPACE_ID=11111111-1111-4111-8111-111111111111
@@ -250,12 +251,37 @@ test_transport_failure_never_emits_credential() {
   pass "transport failures expose only a safe class and never the credential"
 }
 
-test_live_linear_schema_accepts_every_document() {
-  local output
-  output=$($PROJECTION schema-check) || fail "live Linear schema check failed: $output"
-  printf '%s' "$output" | jq -e '.schema == "fm-linear-projection-schema-check.v1" and .documents == 4 and .valid == true' >/dev/null \
-    || fail "live Linear schema check returned an invalid proof: $output"
-  pass "all four GraphQL documents validate against Linear's live introspected schema"
+test_live_schema_probe_is_opt_in_and_default_run_is_offline() {
+  local shim log out rc
+  shim="$TMP_ROOT/no-network-bin"
+  log="$TMP_ROOT/curl.calls"
+  mkdir -p "$shim"
+  cat > "$shim/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+exit 7
+EOF
+  chmod +x "$shim/curl"
+
+  set +e
+  out=$(PATH="$shim:$PATH" bash "$LIVE_SCHEMA_TEST" 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "the ungated live schema regression must succeed as a gate skip"
+  case "$out" in
+    skip:*) ;;
+    *) fail "the live schema regression did not gate-skip by default: $out" ;;
+  esac
+  [ "$(line_count "$log")" = 0 ] || fail "the default suite reached the network: $(cat "$log")"
+
+  set +e
+  out=$(FM_LINEAR_LIVE_SCHEMA=1 PATH="$shim:$PATH" bash "$LIVE_SCHEMA_TEST" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "the opted-in schema regression passed against a sabotaged transport: $out"
+  [ "$(line_count "$log")" -gt 0 ] \
+    || fail "the opt-in never reached the Linear transport, so the gate proves nothing"
+  pass "the live Linear schema probe runs only under its opt-in and the default run is offline"
 }
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -266,6 +292,6 @@ test_entities_keep_stage_and_pr_axes_and_link_decisions
 test_unchanged_second_run_is_mutation_free
 test_archive_boundary_never_resurrects_completed_item
 test_transport_failure_never_emits_credential
-test_live_linear_schema_accepts_every_document
+test_live_schema_probe_is_opt_in_and_default_run_is_offline
 
 echo "# fm-linear-projection.test.sh: all assertions passed"

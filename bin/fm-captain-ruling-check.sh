@@ -3,8 +3,12 @@
 #
 # With no arguments, this is the trusted target of the one global registered
 # watcher check at state/captain-ruling.check.sh.
-# It scans only complete `<id>: <answer>` lines below the `Your replies` heading,
-# accepts ids only while tasks-axi reports an active captain hold, records only a
+# It scans only complete `<id>: <answer>` lines inside the same
+# `<!-- BEGIN/END APPEND-ONLY: captain-replies -->` region that
+# fm-pending-decisions-generate.sh appends reply prefixes to, so captain edits
+# to surrounding prose or headings can never silence detection. A missing,
+# duplicated, or malformed marker pair yields no candidates at all.
+# It accepts ids only while tasks-axi reports an active captain hold, records only a
 # digest of each seen id/answer pair in state/.captain-rulings-seen, and prints
 # one `captain-ruling <id>[,<id>...]` line when a new ruling needs an agent turn.
 # It never changes pending-decisions.md and never resolves a hold.
@@ -27,6 +31,9 @@ PENDING="${FM_PENDING_DECISIONS_OVERRIDE:-$FM_HOME/data/pending-decisions.md}"
 CHECK_ID=captain-ruling
 CHECK="$STATE/$CHECK_ID.check.sh"
 SEEN="$STATE/.captain-rulings-seen"
+REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
+REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
+REPLY_MARKER_TEXT='APPEND-ONLY: captain-replies'
 
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -85,17 +92,22 @@ captain_hold_is_open() {
     && [ "$(show_field "$show" hold_kind)" = captain ]
 }
 
+reply_region() {
+  awk -v begin="$REPLY_BEGIN" -v end="$REPLY_END" -v text="$REPLY_MARKER_TEXT" '
+    { line = $0; sub(/\r$/, "", line) }
+    line == begin { begins++; if (begins == 1 && ends == 0) inside = 1; next }
+    line == end { ends++; inside = 0; next }
+    index(line, text) { malformed = 1; next }
+    inside { print line }
+    END { if (malformed || begins != 1 || ends != 1) exit 3 }
+  ' "$PENDING"
+}
+
 reply_candidates() {
-  local line in_replies=0 id answer
+  local line id answer region
+  region=$(reply_region) || return 0
+  [ -n "$region" ] || return 0
   while IFS= read -r line; do
-    line=${line%$'\r'}
-    if [ "$in_replies" -eq 0 ]; then
-      case "$line" in
-        \#*"Your replies"*) in_replies=1 ;;
-      esac
-      continue
-    fi
-    case "$line" in \#*) break ;; esac
     case "$line" in *:*) ;; *) continue ;; esac
     id=${line%%:*}
     answer=${line#*:}
@@ -106,7 +118,7 @@ reply_candidates() {
     fm_pr_task_id_valid "$id" || continue
     case "$answer" in ''|'<answer>'|'[answer]') continue ;; esac
     printf '%s\t%s\n' "$id" "$answer"
-  done < "$PENDING"
+  done <<< "$region"
 }
 
 ruling_digest() {

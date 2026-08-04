@@ -32,6 +32,7 @@ Such a retry skips the captain re-read, because the hold body already carries th
 A failed intermediate step leaves the hold open.
 
 `bin/fm-captain-ruling-check.sh` emits only privacy-safe hold identities from its watcher path.
+It reads replies from the same `<!-- BEGIN/END APPEND-ONLY: captain-replies -->` region that `bin/fm-pending-decisions-generate.sh` appends reply prefixes to, so the captain can rename, move, or rewrite the surrounding headings and prose without silencing detection, and a missing or malformed marker pair yields no candidates instead of a partial scan.
 Its explicit `--answer <hold-id>` read returns the latest complete answer only while that captain hold is still open and leaves `data/pending-decisions.md` unchanged.
 On that wake, the lifecycle skill owns the semantic agent turn: it reads the origin and key from the hold body, writes the exact answer to `data/decisions/<hold-id>.md`, authors dependent backlog work behind the hold, and delegates closure to `resolve`.
 The resolver remains the only close path, so a status-only change, missing work item, or missing dependency edge cannot close the captain decision.
@@ -85,7 +86,8 @@ $ bash tests/fm-captain-ruling-check.test.sh
 ok - one private single-link global check is registered
 ok - new rulings wake once while malformed, unchanged, and resolved ids stay silent
 ok - the check finishes under 5s and leaves pending-decisions.md byte-identical
-ok - an unterminated half-typed reply waits until the line is complete
+ok - a half-written or malformed reply region waits until the markers close it
+ok - detection follows the append-only markers, not any heading
 ok - active captain holds are accepted on any task kind while other holds stay silent
 ok - answer reader returns the latest complete open ruling without changing captain input
 
