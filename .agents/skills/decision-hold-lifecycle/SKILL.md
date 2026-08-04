@@ -51,6 +51,7 @@ Call `bin/fm-decision-hold.sh resolve <origin-id> <decision-key> --decision-file
 Only after `resolve` succeeds may the dependent work be treated as unblocked, dispatched or handed off, and the pending-decisions projection regenerated.
 Confirm the hold left the canonical captain queue and the routed work remains in the structured backlog.
 If any creation, dependency, decision-record, or resolve step fails, leave the hold open, preserve the already-authored state, and retry the same identities rather than directly unholding or completing the hold.
+Retry with the decision record already prepared for that hold rather than re-reading `--answer` into a fresh record, because a retry carrying different decision text is refused even after the captain revised the reply.
 
 `bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.
