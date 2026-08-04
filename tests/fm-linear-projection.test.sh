@@ -288,6 +288,51 @@ EOF
   pass "archive rollover closes once and cannot resurrect completed work"
 }
 
+test_journal_preflight_refuses_all_malformed_records_before_transport() {
+  local home before output rc
+  home=$(make_fixture malformed-journal-record)
+  cat > "$home/state/linear-projection.json" <<EOF
+{"schema":"fm-linear-projection-state.v1","revision":0,"workspace_id":"$WORKSPACE_ID","items":{"ship-a-decision-approval":"MALFORMED"}}
+EOF
+  before=$(digest "$home/state/linear-projection.json")
+  set +e
+  output=$(sync_env "$home" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a malformed later journal record must refuse the entire sync"
+  assert_contains "$output" "projection journal invalid" "malformed record refusal did not name the journal"
+  [ "$(line_count "$home/linear.log")" = 0 ] || fail "malformed later record allowed an earlier Linear mutation"
+  [ "$(digest "$home/state/linear-projection.json")" = "$before" ] || fail "malformed record refusal changed journal bytes"
+
+  home=$(make_fixture forged-archive-id)
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+
+## Queued
+
+## Done
+EOF
+  printf '%s\n' '- [x] ship-a - Build the projected feature (repo: firstmate) (kind: ship) (done 2026-08-03)' \
+    > "$home/data/done-archive.md"
+  printf '%s\n' '{"schema":"fm-captain-queue.v1","count":0,"orphan_count":0,"items":[]}' \
+    > "$home/queue.json"
+  cat > "$home/state/linear-projection.json" <<EOF
+{"schema":"fm-linear-projection-state.v1","revision":1,"workspace_id":"$WORKSPACE_ID","items":{"ship-a":{"remote_issue_id":"arbitrary-linear-issue","issue_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pr_url":"","attachment_id":"","archived":false,"revision":1}}}
+EOF
+  before=$(digest "$home/state/linear-projection.json")
+  set +e
+  output=$(sync_env "$home" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a forged archived remote id must refuse the entire sync"
+  assert_contains "$output" "projection journal invalid" "forged archive refusal did not name the journal"
+  [ "$(line_count "$home/linear.log")" = 0 ] || fail "forged archive id reached Linear"
+  [ "$(digest "$home/state/linear-projection.json")" = "$before" ] || fail "forged archive refusal changed journal bytes"
+  pass "complete journal preflight refuses malformed records before any mutation"
+}
+
 test_transport_failure_never_emits_credential() {
   local home output rc
   home=$(make_fixture credential-redaction)
@@ -342,6 +387,7 @@ test_entities_keep_stage_and_pr_axes_and_link_decisions
 test_pr_links_require_canonical_metadata
 test_unchanged_second_run_is_mutation_free
 test_archive_boundary_never_resurrects_completed_item
+test_journal_preflight_refuses_all_malformed_records_before_transport
 test_transport_failure_never_emits_credential
 test_live_schema_probe_is_opt_in_and_default_run_is_offline
 

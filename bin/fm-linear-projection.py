@@ -309,9 +309,58 @@ def load_state(path, workspace_id):
         value = json.loads(regular_text(path, required=True))
     except json.JSONDecodeError:
         raise ProjectionError("projection journal invalid") from None
-    if value.get("schema") != "fm-linear-projection-state.v1" or value.get("workspace_id") != workspace_id or not isinstance(value.get("items"), dict):
+    expected = {"schema", "revision", "workspace_id", "items"}
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected
+        or value.get("schema") != "fm-linear-projection-state.v1"
+        or value.get("workspace_id") != workspace_id
+        or not isinstance(value.get("revision"), int)
+        or isinstance(value.get("revision"), bool)
+        or value.get("revision") < 0
+        or not isinstance(value.get("items"), dict)
+    ):
         raise ProjectionError("projection journal invalid")
     return value
+
+
+def deterministic_id(namespace, kind, task_id):
+    return str(uuid.UUID(bytes=uuid.uuid5(namespace, f"{kind}:{task_id}").bytes, version=4))
+
+
+def validate_state(value, namespace):
+    expected = {"remote_issue_id", "issue_digest", "pr_url", "attachment_id", "archived", "revision"}
+    revision_total = 0
+    for task_id, record in value["items"].items():
+        if not isinstance(task_id, str) or not ID_RE.fullmatch(task_id):
+            raise ProjectionError("projection journal invalid")
+        if not isinstance(record, dict) or set(record) != expected:
+            raise ProjectionError("projection journal invalid")
+        revision = record.get("revision")
+        digest = record.get("issue_digest")
+        pr_url = record.get("pr_url")
+        attachment_id = record.get("attachment_id")
+        archived = record.get("archived")
+        if (
+            record.get("remote_issue_id") != deterministic_id(namespace, "issue", task_id)
+            or not isinstance(digest, str)
+            or (digest and not re.fullmatch(r"[0-9a-f]{64}", digest))
+            or not isinstance(pr_url, str)
+            or (pr_url and not PR_RE.fullmatch(pr_url))
+            or not isinstance(attachment_id, str)
+            or (attachment_id and attachment_id != deterministic_id(namespace, "attachment", task_id))
+            or bool(pr_url) != bool(attachment_id)
+            or not isinstance(archived, bool)
+            or not isinstance(revision, int)
+            or isinstance(revision, bool)
+            or revision < 0
+            or (revision == 0 and (digest or pr_url or archived))
+            or (revision > 0 and not digest)
+        ):
+            raise ProjectionError("projection journal invalid")
+        revision_total += revision
+    if revision_total != value["revision"]:
+        raise ProjectionError("projection journal invalid")
 
 
 def save_state(path, value):
@@ -362,13 +411,14 @@ def sync(root, home, data_dir, state_dir, config_dir):
     stages = parse_stages(ledger)
     journal_path = state_dir / "linear-projection.json"
     journal = load_state(journal_path, config["workspace_id"])
+    namespace = uuid.UUID(config["workspace_id"])
+    validate_state(journal, namespace)
     entities = build_entities(items, queue, stages, state_dir)
     token = os.environ["LINEAR_API_KEY"]
-    namespace = uuid.UUID(config["workspace_id"])
     summary = {"schema": "fm-linear-projection-run.v1", "source_count": len(entities), "created": 0, "updated": 0, "linked": 0, "archived": 0, "unchanged": 0, "absent": 0}
     live_ids = {item["id"] for item in entities}
     for item in entities:
-        issue_id = str(uuid.UUID(bytes=uuid.uuid5(namespace, f"issue:{item['id']}").bytes, version=4))
+        issue_id = deterministic_id(namespace, "issue", item["id"])
         record = journal["items"].get(item["id"])
         if record and record.get("archived"):
             raise ProjectionError("archived projection identity returned live")
@@ -400,7 +450,7 @@ def sync(root, home, data_dir, state_dir, config_dir):
             save_state(journal_path, journal)
             summary["updated"], changed = summary["updated"] + 1, True
         if item["pr_url"] and record["pr_url"] != item["pr_url"]:
-            attachment_id = str(uuid.UUID(bytes=uuid.uuid5(namespace, f"attachment:{item['id']}").bytes, version=4))
+            attachment_id = deterministic_id(namespace, "attachment", item["id"])
             variables = {"issueId": issue_id, "url": item["pr_url"], "title": "Linked GitHub pull request", "id": attachment_id}
             data = linear_call("LinkGitHubPr", variables, token)
             if response_id(data, "attachmentLinkGitHubPR", "attachment") != attachment_id:
