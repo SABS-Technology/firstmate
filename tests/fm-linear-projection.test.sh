@@ -99,7 +99,7 @@ scout-b	investigation	2026-08-03T00:00:00Z
 EOF
   printf '%s\n' 'pr=https://github.com/SABS-Technology/firstmate/pull/42' > "$home/state/ship-a.meta"
   cat > "$home/queue.json" <<'EOF'
-{"schema":"fm-captain-queue.v1","count":1,"orphan_count":0,"items":[{"id":"ship-a-decision-approval","title":"Decide approval for PR 42","found_by":["ready_include_held","list_kind_captain"],"orphan":false,"hold_kind":"captain","hold_reason":"approval pending","repo":"firstmate"}]}
+{"schema":"fm-captain-queue.v1","count":1,"orphan_count":0,"items":[{"id":"ship-a-decision-approval","title":"Decide approval for PR 42","found_by":["ready_include_held","list_kind_captain"],"orphan":false,"kind":"captain","hold_kind":"captain","hold_reason":"approval pending","repo":"firstmate","origin":"ship-a","decision_key":"approval","replyable":true}]}
 EOF
   write_config "$home"
   printf '%s\n' "$home"
@@ -187,6 +187,56 @@ test_entities_keep_stage_and_pr_axes_and_link_decisions() {
   [ "$(digest "$home/data/backlog.md")" = "$before_backlog" ] || fail "projection changed backlog bytes"
   [ "$(digest "$home/state/stage-transitions.tsv")" = "$before_stage" ] || fail "projection changed stage-ledger bytes"
   pass "one entity per item carries independent stage/PR axes and decisions link without nesting"
+}
+
+test_pr_links_require_canonical_metadata() {
+  local home summary log state title_issue prose_issue inherited_issue prefix_issue
+  home=$(make_fixture canonical-pr-only)
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] ship-a - Build the projected feature (repo: firstmate) (kind: ship) (since 2026-08-03)
+- [ ] ship-a-decision-approval - Decide approval for PR 42 (repo: firstmate) (kind: captain) (since 2026-08-03)
+- [ ] title-origin-decision-precedent - Choose whether PR 77 is precedent (repo: firstmate) (kind: captain)
+- [ ] prefix-only - Own the canonical PR for separate work (repo: firstmate) (kind: ship)
+- [ ] prefix-only-decision-policy - Discuss policy without a structured origin (repo: firstmate) (kind: captain)
+
+## Queued
+- [ ] scout-b - Investigate the projection (repo: firstmate) (kind: scout)
+- [ ] prose-work - Evaluate prior behavior (repo: firstmate) (kind: ship)
+  Historical context discusses https://github.com/SABS-Technology/firstmate/pull/78 but does not own it.
+- [ ] prose-work-decision-policy - Choose the policy without attaching precedent (repo: firstmate) (kind: captain)
+
+## Done
+EOF
+  cat > "$home/queue.json" <<'EOF'
+{"schema":"fm-captain-queue.v1","count":4,"orphan_count":0,"items":[{"id":"ship-a-decision-approval","title":"Decide approval for PR 42","found_by":["ready_include_held","list_kind_captain"],"orphan":false,"kind":"captain","hold_kind":"captain","hold_reason":"approval pending","repo":"firstmate","origin":"ship-a","decision_key":"approval","replyable":true},{"id":"title-origin-decision-precedent","title":"Choose whether PR 77 is precedent","found_by":["ready_include_held","list_kind_captain"],"orphan":false,"kind":"captain","hold_kind":"captain","hold_reason":"precedent pending","repo":"firstmate","origin":"title-origin","decision_key":"precedent","replyable":true},{"id":"prose-work-decision-policy","title":"Choose the policy without attaching precedent","found_by":["ready_include_held","list_kind_captain"],"orphan":false,"kind":"captain","hold_kind":"captain","hold_reason":"policy pending","repo":"firstmate","origin":"prose-work","decision_key":"policy","replyable":true},{"id":"prefix-only-decision-policy","title":"Discuss policy without a structured origin","found_by":["ready_include_held","list_kind_captain"],"orphan":false,"kind":"captain","hold_kind":"captain","hold_reason":"policy pending","repo":"firstmate","origin":"","decision_key":"","replyable":false}]}
+EOF
+  printf '%s\n' 'pr=https://github.com/SABS-Technology/firstmate/pull/79' \
+    > "$home/state/prefix-only.meta"
+
+  summary=$(sync_env "$home") || fail "canonical-PR fixture projection failed: $summary"
+  log=$(jq -s . "$home/linear.log")
+  state="$home/state/linear-projection.json"
+  title_issue=$(jq -r '.items["title-origin-decision-precedent"].remote_issue_id' "$state")
+  prose_issue=$(jq -r '.items["prose-work"].remote_issue_id' "$state")
+  inherited_issue=$(jq -r '.items["prose-work-decision-policy"].remote_issue_id' "$state")
+  prefix_issue=$(jq -r '.items["prefix-only-decision-policy"].remote_issue_id' "$state")
+  printf '%s' "$summary" | jq -e '.source_count == 8 and .linked == 3' >/dev/null \
+    || fail "prose-derived PR relationships changed the mutation summary: $summary"
+  printf '%s' "$log" | jq -e \
+    --arg title "$title_issue" --arg prose "$prose_issue" \
+    --arg inherited "$inherited_issue" --arg prefix "$prefix_issue" '
+      all(.[] | select(.operationName == "LinkGitHubPr");
+        .variables.issueId != $title
+        and .variables.issueId != $prose
+        and .variables.issueId != $inherited
+        and .variables.issueId != $prefix
+        and .variables.url != "https://github.com/SABS-Technology/firstmate/pull/77"
+        and .variables.url != "https://github.com/SABS-Technology/firstmate/pull/78")
+    ' >/dev/null || fail "title, prose, or prefix inheritance manufactured a PR attachment: $log"
+  pass "only canonical task metadata establishes direct or inherited PR links"
 }
 
 test_unchanged_second_run_is_mutation_free() {
@@ -289,6 +339,7 @@ command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found"; exit 0; 
 
 test_prerequisites_fail_closed_before_transport
 test_entities_keep_stage_and_pr_axes_and_link_decisions
+test_pr_links_require_canonical_metadata
 test_unchanged_second_run_is_mutation_free
 test_archive_boundary_never_resurrects_completed_item
 test_transport_failure_never_emits_credential

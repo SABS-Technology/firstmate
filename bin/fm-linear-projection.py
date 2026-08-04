@@ -235,11 +235,7 @@ def meta_pr(state_dir, task_id):
 
 
 def find_pr(item, state_dir):
-    direct = meta_pr(state_dir, item["id"])
-    if direct:
-        return direct
-    match = PR_RE.search("\n".join(item["source"]))
-    return match.group(0) if match else ""
+    return meta_pr(state_dir, item["id"])
 
 
 def github_status(url):
@@ -295,14 +291,9 @@ def build_entities(items, queue, stages, state_dir):
     for item in items.values():
         if item["entity_type"] != "decision" or item["pr_url"]:
             continue
-        origins = [candidate for candidate in items if item["id"].startswith(candidate + "-decision-")]
-        if origins:
-            item["pr_url"] = items[max(origins, key=len)]["pr_url"]
-        if not item["pr_url"]:
-            number = re.search(r"\bPR[ #]*(\d+)\b", item["title"], re.IGNORECASE)
-            repo = item["repo"] if item["repo"] in {"firstmate", "sabstech"} else ""
-            if number and repo:
-                item["pr_url"] = f"https://github.com/SABS-Technology/{repo}/pull/{number.group(1)}"
+        origin = decisions[item["id"]].get("origin")
+        if isinstance(origin, str) and ID_RE.fullmatch(origin) and origin in items:
+            item["pr_url"] = items[origin]["pr_url"]
     statuses = {}
     for url in sorted({item["pr_url"] for item in items.values() if item["pr_url"]}):
         statuses[url] = github_status(url)
