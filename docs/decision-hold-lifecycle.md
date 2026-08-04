@@ -25,11 +25,26 @@ The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
 It enumerates the active home's blocked work through `tasks-axi list --blocked` and refuses while any task it finds still carries a `blocked-by` edge to the hold without being named by `--routed-to`, so the caller's list can no longer under-report dependent work.
-It re-reads the captain's current reply through `bin/fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the prepared decision record, which narrows the supersession window to the resolve call itself; that read only ever refuses and never supplies decision text.
+It requires the canonical regular `data/decisions/<hold-id>.md` record and verifies that every routed task's durable body or brief points to that exact path before any mutation.
+It requires ownership of the home session lock because direct concurrent backlog mutation is unsupported.
+It enumerates blocked dependents again before the first write and refuses if that inventory changed.
+It re-reads the captain's current reply through `bin/fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the prepared decision record.
+Reply ingestion and resolution serialize through one scoped ruling-resolution lock.
+The resolver compares the locked ruling revision again immediately after the initial hold-body write and rolls back that uncommitted write before refusing if a lock-bypassing writer changed the ruling at the update boundary.
+These checks only refuse and never supply decision text.
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 Such a retry skips the captain re-read, because the hold body already carries that exact decision and the retry only finishes committing it; a reply revised after the commit therefore cannot strand a half-routed hold, and a genuinely different decision is still rejected by the retry identity record.
 A failed intermediate step leaves the hold open.
+
+## Accepted local ruling threat model
+
+The file-backed reply channel is not trusted or authenticated.
+This is an accepted weakness for a single-user machine where every agent already runs as the captain's UID and can modify `bin/` directly.
+A compromised local process can fabricate a ruling, and no signing key, shared secret, or separate authenticated channel is added because that would defend one door in an already-open house.
+The detection boundary is human detection: a fabricated record in `data/decisions/` does not match any ruling the captain remembers making.
+Captain rulings normally arrive in chat or Linear.
+The queue file is only a fallback and does not become the primary ruling path.
 
 `bin/fm-captain-ruling-check.sh` emits only privacy-safe hold identities from its watcher path.
 It reads replies from the same `<!-- BEGIN/END APPEND-ONLY: captain-replies -->` region that `bin/fm-pending-decisions-generate.sh` appends reply prefixes to, so the captain can rename, move, or rewrite the surrounding headings and prose without silencing detection, and a missing or malformed marker pair yields no candidates instead of a partial scan.
@@ -53,6 +68,7 @@ Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
 Captain-ruling round-trip verification date: 2026-08-03.
+Review-finding regression verification date: 2026-08-04.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -76,8 +92,12 @@ ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
 ok - a detected ruling becomes durable dependent work before its hold closes
+ok - re-hold rejects malformed identity collisions and preserves canonical idempotence
+ok - resolve requires the canonical record and exact routed-work pointer
+ok - resolve requires its session lock and refuses a changed dependent set
 ok - resolve discovers every still-blocked dependent and refuses an undisclosed one
 ok - resolve re-reads the captain ruling and refuses a superseded decision record
+ok - ruling revision CAS prevents closure on text changed at the update boundary
 ok - an exact retry finishes routing a committed decision after a revised reply
 ok - a partial-resolve retry carrying a different decision is still refused
 ok - captain-ruling wakes load the single lifecycle owner and preserve close ordering
@@ -90,6 +110,8 @@ ok - a half-written or malformed reply region waits until the markers close it
 ok - detection follows the append-only markers, not any heading
 ok - active captain holds are accepted on any task kind while other holds stay silent
 ok - answer reader returns the latest complete open ruling without changing captain input
+ok - reply ingestion serializes with active ruling resolution
+ok - file-backed ruling channel declares its accepted untrusted boundary
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization preserves strict roles and resolves every blocker compatibly

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Detect captain rulings written into data/pending-decisions.md.
 #
-# With no arguments, this is the trusted target of the one global registered
-# watcher check at state/captain-ruling.check.sh.
+# With no arguments, this is the tracked target of the one global registered
+# watcher check at state/captain-ruling.check.sh, but the file-backed ruling channel is not authenticated.
+# Under the accepted single-user threat model, a compromised local process can fabricate a ruling because it already runs as the captain's UID and can modify tracked scripts directly.
+# Detection is human: a fabricated data/decisions record will not match a ruling the captain remembers making.
+# The queue file remains a fallback because captain rulings normally arrive in chat or on Linear.
 # It scans only complete `<id>: <answer>` lines inside the same
 # `<!-- BEGIN/END APPEND-ONLY: captain-replies -->` region that
 # fm-pending-decisions-generate.sh appends reply prefixes to, so captain edits

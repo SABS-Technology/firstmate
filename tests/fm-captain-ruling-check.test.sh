@@ -6,6 +6,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 CHECK="$ROOT/bin/fm-captain-ruling-check.sh"
+DECISION_DOC="$ROOT/docs/decision-hold-lifecycle.md"
 TMP_ROOT=$(fm_test_tmproot fm-captain-ruling-check-tests)
 REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
 REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
@@ -364,6 +365,22 @@ EOF
   pass "reply ingestion serializes with active ruling resolution"
 }
 
+test_file_ruling_channel_declares_accepted_untrusted_boundary() {
+  assert_grep "not authenticated" "$CHECK" \
+    "ruling detector code does not declare the unauthenticated file channel"
+  assert_grep "compromised local process can fabricate" "$CHECK" \
+    "ruling detector code does not name the accepted fabrication risk"
+  assert_no_grep "trusted target" "$CHECK" \
+    "ruling detector still describes the file-backed channel as trusted"
+  assert_grep "compromised local process can fabricate" "$DECISION_DOC" \
+    "decision lifecycle docs omit the accepted local fabrication risk"
+  assert_grep "human detection" "$DECISION_DOC" \
+    "decision lifecycle docs omit the human detection boundary"
+  assert_grep "chat or Linear" "$DECISION_DOC" \
+    "decision lifecycle docs do not keep the queue file in its fallback role"
+  pass "file-backed ruling channel declares its accepted untrusted boundary"
+}
+
 test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
 test_partial_reply_region_waits_for_completion
@@ -371,3 +388,4 @@ test_detection_survives_heading_moves_and_renames
 test_captain_hold_on_task_kind_is_not_replyable
 test_answer_reads_latest_complete_open_ruling_without_mutation
 test_answer_ingestion_refuses_while_resolution_lock_is_held
+test_file_ruling_channel_declares_accepted_untrusted_boundary
