@@ -107,6 +107,21 @@ tasks_in() {  # <home> <tasks-axi args...>
 run_decisions() {  # <home> <command args...>
   local home=$1
   shift
+  if [ "${1:-}" = resolve ] && [ "${FM_TEST_OMIT_DECISION_POINTER:-0}" != 1 ]; then
+    local origin=${2:-} key=${3:-} hold pointer previous='' argument
+    hold="$origin-decision-$key"
+    pointer="data/decisions/$hold.md"
+    for argument in "$@"; do
+      if [ "$previous" = --routed-to ]; then
+        mkdir -p "$home/data/$argument"
+        if [ ! -f "$home/data/$argument/brief.md" ] \
+          || ! grep -Fqx "Decision record: $pointer" "$home/data/$argument/brief.md"; then
+          printf 'Decision record: %s\n' "$pointer" >> "$home/data/$argument/brief.md"
+        fi
+      fi
+      previous=$argument
+    done
+  fi
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-decision-hold.sh" "$@"
@@ -204,9 +219,10 @@ EOF
   tasks_in "$home" add sample-route-implementation "Apply the selected sample route" \
     --kind ship --repo sample >/dev/null \
     || fail "could not create dependent work fixture"
-  printf 'Use route north for the sample system.\n' > "$home/route-decision.txt"
+  mkdir -p "$home/data/decisions"
+  printf 'Use route north for the sample system.\n' > "$home/data/decisions/$route_hold.md"
   write_captain_reply "$home" "$route_hold" 'Use route north for the sample system.'
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
+  if run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-implementation > "$home/early-resolve.out" 2> "$home/early-resolve.err"; then
     fail "captain hold closed before dependent work had a durable routing edge"
   fi
@@ -228,7 +244,7 @@ fi
 exec "$REAL_TASKS_AXI" "$@"
 EOF
   chmod +x "$home/fakebin/tasks-axi"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
+  if run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-implementation --routed-to sample-route-followup \
     > "$home/partial-route.out" 2> "$home/partial-route.err"; then
     fail "resolution succeeded after a partial dependent-routing failure"
@@ -239,30 +255,33 @@ EOF
   assert_contains "$show" "blocked: no" "partial routing fixture did not release its first dependent"
   show=$(tasks_in "$home" show sample-route-implementation --full)
   assert_contains "$show" "blocked: yes" "partial routing fixture unexpectedly released its second dependent"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
+  if run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-followup > "$home/reduced-retry.out" 2> "$home/reduced-retry.err"; then
     fail "partial resolution retry accepted a reduced routed task set"
   fi
-  printf 'Use route south for the sample system.\n' > "$home/changed-route-decision.txt"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/changed-route-decision.txt" \
+  printf 'Use route south for the sample system.\n' > "$home/data/decisions/$route_hold.md"
+  if run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-implementation --routed-to sample-route-followup \
     > "$home/partial-drifted-decision.out" 2> "$home/partial-drifted-decision.err"; then
     fail "partial resolution retry accepted a different captain decision"
   fi
+  printf 'Use route north for the sample system.\n' > "$home/data/decisions/$route_hold.md"
   tasks_in "$home" "done" sample-route-followup >/dev/null \
     || fail "could not complete already-routed dependent work"
-  run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
+  run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
     || fail "could not resume and complete partial decision routing"
-  run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
+  run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
     || fail "identical resolution retry was not idempotent"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/changed-route-decision.txt" \
+  printf 'Use route south for the sample system.\n' > "$home/data/decisions/$route_hold.md"
+  if run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-implementation --routed-to sample-route-followup \
     > "$home/drifted-decision.out" 2> "$home/drifted-decision.err"; then
     fail "resolution retry accepted a different captain decision"
   fi
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
+  printf 'Use route north for the sample system.\n' > "$home/data/decisions/$route_hold.md"
+  if run_decisions "$home" resolve "$id" route --decision-file "$home/data/decisions/$route_hold.md" \
     --routed-to sample-route-implementation \
     > "$home/drifted-routes.out" 2> "$home/drifted-routes.err"; then
     fail "resolution retry accepted a different routed task set"
@@ -501,9 +520,10 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-first --full)
   assert_contains "$show" "blocked_by: \"$hold_first,pad-a,pad-b\"" \
     "first-position fixture must quote multi-entry blocked_by"
-  printf 'Decide first edge.\n' > "$home/d-first.txt"
+  mkdir -p "$home/data/decisions"
+  printf 'Decide first edge.\n' > "$home/data/decisions/$hold_first.md"
   write_captain_reply "$home" "$hold_first" 'Decide first edge.'
-  if ! run_decisions "$home" resolve "$origin" edge-first --decision-file "$home/d-first.txt" \
+  if ! run_decisions "$home" resolve "$origin" edge-first --decision-file "$home/data/decisions/$hold_first.md" \
     --routed-to dep-first > "$home/first.out" 2> "$home/first.err"; then
     fail "resolve failed when hold id is FIRST in quoted blocked_by: $(cat "$home/first.err")"
   fi
@@ -516,9 +536,9 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-mid --full)
   assert_contains "$show" "blocked_by: \"pad-a,$hold_mid,pad-b\"" \
     "middle-position fixture must quote multi-entry blocked_by"
-  printf 'Decide mid edge.\n' > "$home/d-mid.txt"
+  printf 'Decide mid edge.\n' > "$home/data/decisions/$hold_mid.md"
   write_captain_reply "$home" "$hold_mid" 'Decide mid edge.'
-  if ! run_decisions "$home" resolve "$origin" edge-mid --decision-file "$home/d-mid.txt" \
+  if ! run_decisions "$home" resolve "$origin" edge-mid --decision-file "$home/data/decisions/$hold_mid.md" \
     --routed-to dep-mid > "$home/mid.out" 2> "$home/mid.err"; then
     fail "resolve failed when hold id is MIDDLE in quoted blocked_by: $(cat "$home/mid.err")"
   fi
@@ -531,9 +551,9 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-last --full)
   assert_contains "$show" "blocked_by: \"pad-a,pad-b,$hold_last\"" \
     "last-position fixture must quote multi-entry blocked_by"
-  printf 'Decide last edge.\n' > "$home/d-last.txt"
+  printf 'Decide last edge.\n' > "$home/data/decisions/$hold_last.md"
   write_captain_reply "$home" "$hold_last" 'Decide last edge.'
-  if ! run_decisions "$home" resolve "$origin" edge-last --decision-file "$home/d-last.txt" \
+  if ! run_decisions "$home" resolve "$origin" edge-last --decision-file "$home/data/decisions/$hold_last.md" \
     --routed-to dep-last > "$home/last.out" 2> "$home/last.err"; then
     fail "resolve failed when hold id is LAST in quoted blocked_by: $(cat "$home/last.err")"
   fi
@@ -545,8 +565,8 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-absent --full)
   assert_contains "$show" "blocked_by: \"pad-a,pad-b\"" \
     "absent-control fixture must quote multi-entry blocked_by without the hold id"
-  printf 'Decide absent edge.\n' > "$home/d-absent.txt"
-  if run_decisions "$home" resolve "$origin" edge-absent --decision-file "$home/d-absent.txt" \
+  printf 'Decide absent edge.\n' > "$home/data/decisions/$hold_absent.md"
+  if run_decisions "$home" resolve "$origin" edge-absent --decision-file "$home/data/decisions/$hold_absent.md" \
     --routed-to dep-absent > "$home/absent.out" 2> "$home/absent.err"; then
     fail "resolve succeeded when hold id is genuinely absent from blocked_by"
   fi
@@ -674,6 +694,56 @@ test_rehold_requires_canonical_identity_fields() {
     [.items[] | select(.id == $hold and .replyable == true)] | length == 1
   ' >/dev/null || fail "canonical idempotent hold was not exactly once and replyable: $queue"
   pass "re-hold rejects malformed identity collisions and preserves canonical idempotence"
+}
+
+test_resolve_requires_canonical_record_and_routed_pointer() {
+  local home origin=sample-canonical-review key=route hold transient canonical dependent show
+  hold="$origin-decision-$key"
+  dependent=sample-canonical-work
+  home=$(make_ruling_home canonical-resolution-record "$origin" "$key" 'Use the east route.')
+  canonical="$home/data/decisions/$hold.md"
+  transient="$home/state/transient-answer.txt"
+  cp "$canonical" "$transient"
+  tasks_in "$home" add "$dependent" "Apply the canonical sample route" \
+    --kind ship --repo sample --body "No decision-record pointer." \
+    --blocked-by "$hold" >/dev/null \
+    || fail "could not create pointerless dependent"
+  mkdir -p "$home/data/$dependent"
+  printf 'Decision record: data/decisions/%s.md\n' "$hold" \
+    > "$home/data/$dependent/brief.md"
+
+  if FM_TEST_OMIT_DECISION_POINTER=1 run_decisions "$home" resolve "$origin" "$key" \
+    --decision-file "$transient" --routed-to "$dependent" \
+    > "$home/volatile.out" 2> "$home/volatile.err"; then
+    fail "resolve accepted a volatile decision file and pointerless dependent"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "noncanonical resolution closed the hold"
+  assert_contains "$show" "held: yes" "noncanonical resolution released the hold"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" "blocked: yes" "noncanonical resolution unblocked its dependent"
+
+  rm "$home/data/$dependent/brief.md"
+  if FM_TEST_OMIT_DECISION_POINTER=1 run_decisions "$home" resolve "$origin" "$key" \
+    --decision-file "$canonical" --routed-to "$dependent" \
+    > "$home/pointerless.out" 2> "$home/pointerless.err"; then
+    fail "resolve accepted canonical input without a durable routed-work pointer"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "pointerless resolution closed the hold"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" "blocked: yes" "pointerless resolution unblocked its dependent"
+
+  printf 'Decision record: data/decisions/%s.md\n' "$hold" \
+    > "$home/data/$dependent/brief.md"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$canonical" \
+    --routed-to "$dependent" >/dev/null \
+    || fail "canonical regular decision record with durable routed pointer did not resolve"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "canonical resolution did not close the hold"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" "blocked: no" "canonical resolution did not route its dependent"
+  pass "resolve requires the canonical record and exact routed-work pointer"
 }
 
 make_ruling_home() {  # <name> <origin> <key> <answer>
@@ -1018,7 +1088,7 @@ test_partial_retry_still_refuses_a_different_decision() {
   hold="$origin-decision-$key"
   setup_partial_resolve drifted-partial-retry "$origin" "$key" 'Use the east route.'
   home=$PARTIAL_HOME
-  record="$home/drifted-decision.txt"
+  record="$home/data/decisions/$hold.md"
   printf 'Use the west route instead.\n' > "$record"
   write_captain_reply "$home" "$hold" 'Use the west route instead.'
 
@@ -1039,7 +1109,7 @@ test_partial_retry_still_refuses_a_different_decision() {
 
   setup_partial_resolve falsified-drifted-retry "$origin" "$key" 'Use the east route.'
   home=$PARTIAL_HOME
-  record="$home/drifted-decision.txt"
+  record="$home/data/decisions/$hold.md"
   printf 'Use the west route instead.\n' > "$record"
   write_captain_reply "$home" "$hold" 'Use the west route instead.'
   falsified=$(falsified_decision_hold "$home" committed-identity \
@@ -1086,6 +1156,7 @@ test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
 test_rehold_requires_canonical_identity_fields
+test_resolve_requires_canonical_record_and_routed_pointer
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling

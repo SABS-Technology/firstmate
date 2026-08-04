@@ -33,7 +33,8 @@
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
 # source before this gate has succeeded.
 #
-# `resolve` requires every --routed-to task to exist and to be blocked by the hold.
+# `resolve` requires the canonical regular data/decisions/<hold-id>.md record.
+# Every --routed-to task must durably point to that exact record in its body or brief and be blocked by the hold.
 # It also discovers every other task in the active home that is still blocked by
 # that hold and refuses while any of them is absent from --routed-to, so the caller
 # cannot close a hold that still owns undisclosed dependent work.
@@ -296,6 +297,24 @@ verify_hold_identity() {  # <hold-id> <origin-id> <decision-key> <body>
   fail "existing captain hold $id has missing or conflicting canonical identity fields"
 }
 
+require_canonical_decision_file() {  # <hold-id> <path>
+  local id=$1 path=$2 canonical="$DATA/decisions/$1.md"
+  [ "$path" = "$canonical" ] \
+    || fail "decision file must be the canonical record: $canonical"
+  [ -f "$canonical" ] && [ ! -L "$canonical" ] \
+    || fail "canonical decision record must be a regular file: $canonical"
+}
+
+routed_has_decision_pointer() {  # <task-id> <pointer> <show-output>
+  local dep=$1 pointer=$2 show=$3 brief="$DATA/$1/brief.md" body
+  body=$(show_field "$show" body)
+  case "$body" in
+    *"Decision record: $pointer\\n"*|*"Decision record: $pointer\""|*"Decision record: $pointer") return 0 ;;
+  esac
+  [ -f "$brief" ] && [ ! -L "$brief" ] \
+    && grep -Fqx -- "Decision record: $pointer" "$brief"
+}
+
 command_id() {
   [ "$#" -eq 2 ] || { usage >&2; exit 2; }
   hold_id "$1" "$2"
@@ -443,7 +462,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body dependents resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body dependents resolution_recorded=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -468,6 +487,8 @@ command_resolve() {
   decision_digest=$(sha256_text "$decision")
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
+  require_canonical_decision_file "$id" "$decision_file"
+  decision_pointer="data/decisions/$id.md"
   if verify_hold_resolved "$id"; then
     hold_show=$(task_show "$id")
     hold_body=$(show_field "$hold_show" body)
@@ -487,6 +508,8 @@ command_resolve() {
 
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep does not exist in the active home"
+    routed_has_decision_pointer "$dep" "$decision_pointer" "$show" \
+      || fail "routed task $dep does not point to $decision_pointer in its durable body or brief"
     state=$(show_field "$show" state)
     [ "$state" != "done" ] || [ "$resolution_recorded" = 1 ] \
       || fail "routed task $dep is already done"
