@@ -38,6 +38,8 @@
 # It also discovers every other task in the active home that is still blocked by
 # that hold and refuses while any of them is absent from --routed-to, so the caller
 # cannot close a hold that still owns undisclosed dependent work.
+# Direct concurrent backlog mutation is unsupported.
+# The command requires ownership of the home session lock and refuses if the blocked-dependent set changes between enumeration and the first mutation.
 # It then re-reads the captain's current reply through
 # `fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the
 # prepared decision record, so a ruling revised during the agent turn is never closed
@@ -315,6 +317,27 @@ routed_has_decision_pointer() {  # <task-id> <pointer> <show-output>
     && grep -Fqx -- "Decision record: $pointer" "$brief"
 }
 
+require_session_lock_ownership() {
+  local lock="$STATE/.lock" holder pid=$$ parent steps=0
+  [ -f "$lock" ] && [ ! -L "$lock" ] \
+    || fail "resolve requires ownership of the home session lock: $lock"
+  IFS= read -r holder < "$lock" \
+    || fail "resolve could not read the home session lock: $lock"
+  case "$holder" in
+    ''|*[!0-9]*) fail "resolve found an invalid home session lock: $lock" ;;
+  esac
+  while [ "$steps" -lt 16 ]; do
+    [ "$pid" = "$holder" ] && return 0
+    parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]') \
+      || fail "resolve could not verify home session lock ownership"
+    [ -n "$parent" ] && [ "$parent" != 1 ] \
+      || fail "resolve does not own the home session lock (holder=$holder)"
+    pid=$parent
+    steps=$((steps + 1))
+  done
+  fail "resolve does not own the home session lock (holder=$holder)"
+}
+
 command_id() {
   [ "$#" -eq 2 ] || { usage >&2; exit 2; }
   hold_id "$1" "$2"
@@ -462,7 +485,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body dependents resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body dependents current_dependents resolution_recorded=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -488,6 +511,7 @@ command_resolve() {
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
   require_canonical_decision_file "$id" "$decision_file"
+  require_session_lock_ownership
   decision_pointer="data/decisions/$id.md"
   if verify_hold_resolved "$id"; then
     hold_show=$(task_show "$id")
@@ -525,7 +549,7 @@ command_resolve() {
     esac
   done
 
-  dependents=$(hold_dependents "$id") \
+  dependents=$(hold_dependents "$id" | LC_ALL=C sort -u) \
     || fail "could not enumerate the work blocked by $id"
   for dep in $dependents; do
     case " $routed " in
@@ -535,6 +559,11 @@ command_resolve() {
   done
 
   [ "$resolution_recorded" = 1 ] || verify_decision_is_current "$id" "$decision"
+
+  current_dependents=$(hold_dependents "$id" | LC_ALL=C sort -u) \
+    || fail "could not re-enumerate the work blocked by $id"
+  [ "$current_dependents" = "$dependents" ] \
+    || fail "work blocked by $id changed during resolve; direct concurrent backlog mutation is unsupported"
 
   body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:' "$decision_digest" "$routed_csv" "$decision")
   for dep in $routed; do

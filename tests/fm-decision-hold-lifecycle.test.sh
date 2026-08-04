@@ -23,6 +23,7 @@ command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
   mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  printf '%s\n' "$$" > "$home/state/.lock"
   cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
   cat > "$home/data/backlog.md" <<'EOF'
 ## In flight
@@ -746,6 +747,60 @@ test_resolve_requires_canonical_record_and_routed_pointer() {
   pass "resolve requires the canonical record and exact routed-work pointer"
 }
 
+test_resolve_enforces_session_lock_and_stable_dependent_set() {
+  local home origin=sample-concurrent-review key=route hold record show
+  hold="$origin-decision-$key"
+
+  home=$(make_ruling_home missing-session-lock "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-lock-work "Apply the locked sample route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  rm "$home/state/.lock"
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-lock-work > "$home/lock.out" 2> "$home/lock.err"; then
+    fail "resolve mutated backlog without owning the home session lock"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "missing-lock resolve closed the hold"
+  show=$(tasks_in "$home" show sample-lock-work --full)
+  assert_contains "$show" "blocked: yes" "missing-lock resolve routed dependent work"
+
+  home=$(make_ruling_home changed-dependent-set "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-stable-work "Apply the stable sample route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  cat > "$home/fakebin/tasks-axi" <<EOF
+#!/usr/bin/env bash
+set -eu
+if [ "\${1:-}" = list ] && [ "\${2:-}" = --blocked ] \
+  && [ ! -f "$home/dependent-added" ]; then
+  output=\$("\$REAL_TASKS_AXI" "\$@")
+  "\$REAL_TASKS_AXI" add sample-late-work "Late concurrent dependent" \
+    --kind ship --repo sample \
+    --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null
+  : > "$home/dependent-added"
+  printf '%s\n' "\$output"
+  exit 0
+fi
+exec "\$REAL_TASKS_AXI" "\$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-stable-work > "$home/concurrent.out" 2> "$home/concurrent.err"; then
+    fail "resolve closed after the dependent set changed following enumeration"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "changed-dependent resolve closed the hold"
+  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "changed-dependent resolve mutated the hold body"
+  show=$(tasks_in "$home" show sample-stable-work --full)
+  assert_contains "$show" "blocked: yes" "changed-dependent resolve routed initial work"
+  show=$(tasks_in "$home" show sample-late-work --full)
+  assert_contains "$show" "blocked: yes" "changed-dependent resolve released late work"
+  pass "resolve requires its session lock and refuses a changed dependent set"
+}
+
 make_ruling_home() {  # <name> <origin> <key> <answer>
   local name=$1 origin=$2 key=$3 answer=$4 home hold
   home=$(make_home "$name")
@@ -1157,6 +1212,7 @@ test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
 test_rehold_requires_canonical_identity_fields
 test_resolve_requires_canonical_record_and_routed_pointer
+test_resolve_enforces_session_lock_and_stable_dependent_set
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
