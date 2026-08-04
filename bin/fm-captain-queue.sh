@@ -14,10 +14,13 @@
 #
 # The JSON contract is `fm-captain-queue.v1`:
 #   {schema,count,orphan_count,items:[...]}
-# Every item contains id, title, found_by, orphan, hold_kind, hold_reason, and
-# normalized repo. `found_by` uses the stable values `ready_include_held`,
-# `list_kind_captain`, and `list_state_held`. An item is an orphan when an active
-# captain hold is not captain-kind or a captain-kind item lacks an active hold.
+# Every item contains id, title, found_by, orphan, kind, hold_kind, hold_reason,
+# normalized repo, structured origin and decision key, and replyability.
+# `found_by` uses the stable values `ready_include_held`, `list_kind_captain`,
+# and `list_state_held`. An item is an orphan when an active captain hold is not
+# captain-kind or a captain-kind item lacks an active hold. A replyable item must
+# also be a captain-kind record whose validated Origin and Decision key fields
+# reconstruct its exact backlog identity.
 # Known sabstech aliases normalize to `sabstech`; `firstmate` stays `firstmate`.
 set -eu
 
@@ -69,6 +72,13 @@ normalize_repo() { # <repo>
     sabstech|SABS-Technology/sabstech|SABS-Technology-sabstech) printf 'sabstech\n' ;;
     firstmate) printf 'firstmate\n' ;;
     *) printf '%s\n' "$1" ;;
+  esac
+}
+
+valid_slug() { # <value>
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) return 0 ;;
   esac
 }
 
@@ -137,6 +147,22 @@ while IFS= read -r id; do
   title=$(show_field "$show" title)
   hold_reason=$(show_field "$show" hold_reason)
   repo=$(normalize_repo "$(show_field "$show" repo)")
+  body=$(show_field "$show" body)
+  origin=$(printf '%s\n' "$body" | sed -n 's/^Origin: //p' | head -1)
+  decision_key=$(printf '%s\n' "$body" | sed -n 's/^Decision key: //p' | head -1)
+  structured=false
+  if valid_slug "$origin" && valid_slug "$decision_key" \
+    && [ "$id" = "$origin-decision-$decision_key" ]; then
+    structured=true
+  else
+    origin=''
+    decision_key=''
+  fi
+  replyable=false
+  if [ "$structured" = true ] && [ "$kind" = captain ] \
+    && { [ "$in_ready" = true ] || [ "$in_held" = true ]; }; then
+    replyable=true
+  fi
   jq -cn \
     --arg id "$id" \
     --arg title "$title" \
@@ -145,7 +171,11 @@ while IFS= read -r id; do
     --arg hold_kind "$hold_kind" \
     --arg hold_reason "$hold_reason" \
     --arg repo "$repo" \
-    '{id:$id,title:$title,found_by:$found_by,orphan:$orphan,hold_kind:$hold_kind,hold_reason:$hold_reason,repo:$repo}' \
+    --arg kind "$kind" \
+    --arg origin "$origin" \
+    --arg decision_key "$decision_key" \
+    --argjson replyable "$replyable" \
+    '{id:$id,title:$title,found_by:$found_by,orphan:$orphan,kind:$kind,hold_kind:$hold_kind,hold_reason:$hold_reason,repo:$repo,origin:$origin,decision_key:$decision_key,replyable:$replyable}' \
     >> "$TMP_DIR/items.ndjson"
 done < "$TMP_DIR/candidates.ids"
 

@@ -118,9 +118,13 @@ test_json_contract_carries_required_fields() {
         (.id | type) == "string"
         and (.title | type) == "string"
         and (.found_by | type) == "array"
+        and (.kind | type) == "string"
         and (.hold_kind | type) == "string"
         and (.hold_reason | type) == "string"
-        and (.repo | type) == "string")
+        and (.repo | type) == "string"
+        and (.origin | type) == "string"
+        and (.decision_key | type) == "string"
+        and (.replyable | type) == "boolean")
   ' >/dev/null || fail "JSON contract is incomplete or invalid: $json"
   pass "JSON output parses and carries every required field"
 }

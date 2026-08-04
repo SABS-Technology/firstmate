@@ -8,9 +8,10 @@
 # fm-pending-decisions-generate.sh appends reply prefixes to, so captain edits
 # to surrounding prose or headings can never silence detection. A missing,
 # duplicated, or malformed marker pair yields no candidates at all.
-# It accepts ids only while tasks-axi reports an active captain hold, records only a
-# digest of each seen id/answer pair in state/.captain-rulings-seen, and prints
-# one `captain-ruling <id>[,<id>...]` line when a new ruling needs an agent turn.
+# It accepts ids only while the canonical captain queue marks their structured
+# captain-kind record replyable, records only a digest of each seen id/answer
+# pair in state/.captain-rulings-seen, and prints one
+# `captain-ruling <id>[,<id>...]` line when a new ruling needs an agent turn.
 # It never changes pending-decisions.md and never resolves a hold.
 # `--answer <id>` gives the handling agent the latest complete answer for one
 # still-open captain hold without exposing answer text in the watcher wake.
@@ -34,6 +35,7 @@ SEEN="$STATE/.captain-rulings-seen"
 REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
 REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
 REPLY_MARKER_TEXT='APPEND-ONLY: captain-replies'
+CAPTAIN_QUEUE="$SCRIPT_DIR/fm-captain-queue.sh"
 
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -77,19 +79,16 @@ install_check() {
   fi
 }
 
-show_field() {
-  printf '%s\n' "$1" | sed -n "s/^  $2: //p" | head -1
+captain_queue() {
+  [ -x "$CAPTAIN_QUEUE" ] || return 1
+  FM_HOME="$FM_HOME" "$CAPTAIN_QUEUE" --json 2>/dev/null
 }
 
-captain_hold_is_open() {
-  local id=$1 show
-  command -v tasks-axi >/dev/null 2>&1 || return 1
-  show=$(cd "$FM_HOME" && tasks-axi show "$id" --full 2>/dev/null) || return 1
-  # The canonical queue admits captain holds on any task kind. Requiring
-  # kind=captain here silently drops real captain decisions on ordinary tasks.
-  [ "$(show_field "$show" state)" = queued ] \
-    && [ "$(show_field "$show" held)" = yes ] \
-    && [ "$(show_field "$show" hold_kind)" = captain ]
+captain_hold_is_replyable() {  # <hold-id> <queue-json>
+  jq -e --arg id "$1" '
+    .schema == "fm-captain-queue.v1"
+    and any(.items[]; .id == $id and .replyable == true)
+  ' >/dev/null <<< "$2"
 }
 
 reply_region() {
@@ -150,14 +149,15 @@ publish_seen() {
 }
 
 detect_rulings() {
-  local id answer digest hashes='' ids='' candidates
+  local id answer digest hashes='' ids='' candidates queue
   [ -f "$PENDING" ] && [ ! -L "$PENDING" ] || return 0
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
   candidates=$(reply_candidates)
   [ -n "$candidates" ] || return 0
+  queue=$(captain_queue) || return 0
   while IFS=$'\t' read -r id answer; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
-    captain_hold_is_open "$id" || continue
+    captain_hold_is_replyable "$id" "$queue" || continue
     digest=$(ruling_digest "$id" "$answer") || return 0
     if { [ -f "$SEEN" ] && grep -Fqx "$digest" "$SEEN"; } \
       || printf '%s' "$hashes" | grep -Fqx "$digest"; then
@@ -172,15 +172,19 @@ detect_rulings() {
 }
 
 answer_for_hold() {
-  local id=${1:-} candidate_id candidate_answer candidates answer=''
+  local id=${1:-} candidate_id candidate_answer candidates answer='' queue
   [ "$#" -eq 1 ] || return 2
   fm_pr_task_id_valid "$id" || return 2
   [ -f "$PENDING" ] && [ ! -L "$PENDING" ] || {
     printf 'fm-captain-ruling-check: pending decisions are unavailable\n' >&2
     return 1
   }
-  captain_hold_is_open "$id" || {
-    printf 'fm-captain-ruling-check: captain hold is not open: %s\n' "$id" >&2
+  queue=$(captain_queue) || {
+    printf 'fm-captain-ruling-check: captain queue is unavailable\n' >&2
+    return 1
+  }
+  captain_hold_is_replyable "$id" "$queue" || {
+    printf 'fm-captain-ruling-check: captain hold is not replyable: %s\n' "$id" >&2
     return 1
   }
   candidates=$(reply_candidates)

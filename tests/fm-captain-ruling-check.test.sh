@@ -34,26 +34,66 @@ write_tasks_axi() {
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
+case "$*" in
+  'ready --include-held')
+    cat <<'OUT'
+ready[0]{}
+held[3]{id,title}
+  review-decision-route,Route decision
+  review-decision-access,Access decision
+  spec-decision-canonicity,Ordinary canonicity work
+OUT
+    exit 0
+    ;;
+  'list --kind captain')
+    cat <<'OUT'
+tasks[3]{id,title}
+  review-decision-route,Route decision
+  review-decision-access,Access decision
+  closed-decision,Closed decision
+OUT
+    exit 0
+    ;;
+  'list --state held')
+    cat <<'OUT'
+tasks[4]{id,title}
+  review-decision-route,Route decision
+  review-decision-access,Access decision
+  spec-decision-canonicity,Ordinary canonicity work
+  no-active-captain-hold,Crew hold
+OUT
+    exit 0
+    ;;
+esac
 [ "${1:-}" = show ] && [ "${3:-}" = --full ] || exit 1
 case "${2:-}" in
   review-decision-route|review-decision-access)
+    key=${2##*-decision-}
     cat <<OUT
 task:
   id: ${2:-}
+  title: Review decision
   state: queued
   held: yes
   kind: captain
   hold_kind: captain
+  hold_reason: captain reply pending
+  repo: firstmate
+  body: "Origin: review\\nDecision key: $key"
 OUT
     ;;
-  spec-canonicity-policy)
+  spec-decision-canonicity)
     cat <<OUT
 task:
-  id: spec-canonicity-policy
+  id: spec-decision-canonicity
+  title: Ordinary canonicity work
   state: queued
   held: yes
   kind: task
   hold_kind: captain
+  hold_reason: captain reply pending
+  repo: firstmate
+  body: "Origin: spec\\nDecision key: canonicity"
 OUT
     ;;
   no-active-captain-hold)
@@ -64,6 +104,10 @@ task:
   held: yes
   kind: task
   hold_kind: crew
+  title: Crew hold
+  hold_reason: crew reply pending
+  repo: firstmate
+  body: ""
 OUT
     ;;
   closed-decision)
@@ -74,6 +118,10 @@ task:
   held: no
   kind: captain
   hold_kind: captain
+  title: Closed decision
+  hold_reason: "-"
+  repo: firstmate
+  body: ""
 OUT
     ;;
   *) exit 1 ;;
@@ -82,7 +130,7 @@ SH
   chmod +x "$fakebin/tasks-axi"
 }
 
-test_captain_hold_on_task_kind_is_detected() {
+test_captain_hold_on_task_kind_is_not_replyable() {
   local world home fakebin pending out
   world=$(make_home task-kind); home=${world%%|*}; fakebin=${world#*|}
   pending="$home/data/pending-decisions.md"
@@ -92,15 +140,19 @@ test_captain_hold_on_task_kind_is_detected() {
 ## ✍️ Your replies
 
 <!-- BEGIN APPEND-ONLY: captain-replies -->
-spec-canonicity-policy: approve code and tests as canonical
+spec-decision-canonicity: approve code and tests as canonical
 no-active-captain-hold: this must stay silent
 <!-- END APPEND-ONLY: captain-replies -->
 EOF
 
   out=$(run_check "$home" "$fakebin") || fail "task-kind captain-hold check failed"
-  [ "$out" = 'captain-ruling spec-canonicity-policy' ] \
-    || fail "active captain hold on kind=task was not detected or non-captain hold leaked: $out"
-  pass "active captain holds are accepted on any task kind while other holds stay silent"
+  [ -z "$out" ] \
+    || fail "ordinary-kind captain hold emitted an unprocessable ruling wake: $out"
+  if read_answer "$home" "$fakebin" spec-decision-canonicity \
+    > "$home/ordinary.out" 2> "$home/ordinary.err"; then
+    fail "answer reader accepted an ordinary-kind captain hold"
+  fi
+  pass "ordinary-kind captain holds cannot emit ruling wakes or answers"
 }
 
 make_home() {
@@ -222,7 +274,7 @@ test_detection_survives_heading_moves_and_renames() {
 Prose the captain is free to rewrite.
 
 <!-- BEGIN APPEND-ONLY: captain-replies -->
-spec-canonicity-policy: approve code and tests as canonical
+review-decision-route: approve code and tests as canonical
 <!-- END APPEND-ONLY: captain-replies -->
 
 ## ✍️ Your replies
@@ -231,9 +283,9 @@ review-decision-route: this decoy sits outside the append-only region
 EOF
 
   out=$(run_check "$home" "$fakebin") || fail "renamed-heading check failed"
-  [ "$out" = 'captain-ruling spec-canonicity-policy' ] \
+  [ "$out" = 'captain-ruling review-decision-route' ] \
     || fail "renaming or moving the heading changed which replies are detected: $out"
-  answer=$(read_answer "$home" "$fakebin" spec-canonicity-policy) \
+  answer=$(read_answer "$home" "$fakebin" review-decision-route) \
     || fail "answer reader failed after the heading moved"
   [ "$answer" = 'approve code and tests as canonical' ] \
     || fail "answer reader read outside the append-only region: $answer"
@@ -243,7 +295,7 @@ EOF
 
 ## ✍️ Your replies
 
-spec-canonicity-policy: approve code and tests as canonical
+review-decision-route: approve code and tests as canonical
 EOF
   out=$(run_check "$home" "$fakebin") || fail "markerless check failed"
   [ -z "$out" ] || fail "a heading without the append-only markers woke the detector: $out"
@@ -290,5 +342,5 @@ test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
 test_partial_reply_region_waits_for_completion
 test_detection_survives_heading_moves_and_renames
-test_captain_hold_on_task_kind_is_detected
+test_captain_hold_on_task_kind_is_not_replyable
 test_answer_reads_latest_complete_open_ruling_without_mutation
