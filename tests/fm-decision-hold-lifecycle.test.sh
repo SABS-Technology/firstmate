@@ -788,6 +788,136 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   pass "resolve re-reads the captain ruling and refuses a superseded decision record"
 }
 
+PARTIAL_HOME=''
+
+# Leaves a hold that durably committed its captain decision but died before it
+# finished clearing edges, which is the recovery state `resolve` must still be
+# able to complete. Sets PARTIAL_HOME rather than echoing it so a failed setup
+# stops the run instead of returning an empty home from a command substitution.
+setup_partial_resolve() {  # <name> <origin> <key> <answer>
+  local name=$1 origin=$2 key=$3 answer=$4
+  local home hold show
+  hold="$origin-decision-$key"
+  home=$(make_ruling_home "$name" "$origin" "$key" "$answer")
+  [ -n "$home" ] || fail "could not stage the $name partial-resolve home"
+  tasks_in "$home" add sample-partial-first "Apply the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the first $name dependent"
+  tasks_in "$home" add sample-partial-second "Check the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the second $name dependent"
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = unblock ] && [ "${2:-}" = sample-partial-second ] \
+  && [ ! -f "$FM_HOME/partial-unblock-failed-once" ]; then
+  : > "$FM_HOME/partial-unblock-failed-once"
+  exit 1
+fi
+exec "$REAL_TASKS_AXI" "$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+  if run_decisions "$home" resolve "$origin" "$key" \
+    --decision-file "$home/data/decisions/$hold.md" \
+    --routed-to sample-partial-first --routed-to sample-partial-second \
+    > "$home/partial.out" 2> "$home/partial.err"; then
+    fail "the $name fixture finished routing instead of failing midway"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the $name partial resolve closed the hold"
+  assert_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "the $name partial resolve did not durably commit the captain decision"
+  show=$(tasks_in "$home" show sample-partial-first --full)
+  assert_contains "$show" "blocked: no" "the $name partial resolve cleared no dependency edge"
+  show=$(tasks_in "$home" show sample-partial-second --full)
+  assert_contains "$show" "blocked: yes" "the $name partial resolve cleared every dependency edge"
+  PARTIAL_HOME=$home
+}
+
+test_exact_retry_finishes_routing_after_a_revised_reply() {
+  local origin=sample-partial-review key=route
+  local home hold record show falsified
+  hold="$origin-decision-$key"
+  setup_partial_resolve partial-retry "$origin" "$key" 'Use the east route.'
+  home=$PARTIAL_HOME
+  record="$home/data/decisions/$hold.md"
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-partial-first --routed-to sample-partial-second >/dev/null \
+    || fail "an exact retry could not finish routing an already committed decision"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "the exact retry did not close the half-routed hold"
+  assert_contains "$show" "Use the east route." \
+    "the exact retry did not preserve the durably committed captain decision"
+  assert_not_contains "$show" "Use the west route instead." \
+    "the exact retry adopted a reply the hold had never committed"
+  show=$(tasks_in "$home" show sample-partial-second --full)
+  assert_contains "$show" "blocked: no" "the exact retry did not finish clearing the edges"
+
+  setup_partial_resolve falsified-partial-retry "$origin" "$key" 'Use the east route.'
+  home=$PARTIAL_HOME
+  record="$home/data/decisions/$hold.md"
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+  falsified=$(falsified_decision_hold "$home" committed-skip \
+    's/\[ "\$resolution_recorded" = 1 \] || verify_decision_is_current/false || verify_decision_is_current/')
+  if run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to sample-partial-first \
+    --routed-to sample-partial-second >/dev/null 2>&1; then
+    fail "the exact-retry regression still passes without the committed-decision skip"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" \
+    "the falsified run must leave the half-routed hold permanently unresolvable"
+  show=$(tasks_in "$home" show sample-partial-second --full)
+  assert_contains "$show" "blocked: yes" \
+    "the falsified run must leave the unfinished dependency edge in place"
+  pass "an exact retry finishes routing a committed decision after a revised reply"
+}
+
+test_partial_retry_still_refuses_a_different_decision() {
+  local origin=sample-drift-review key=route
+  local home hold record show falsified
+  hold="$origin-decision-$key"
+  setup_partial_resolve drifted-partial-retry "$origin" "$key" 'Use the east route.'
+  home=$PARTIAL_HOME
+  record="$home/drifted-decision.txt"
+  printf 'Use the west route instead.\n' > "$record"
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-partial-first --routed-to sample-partial-second \
+    > "$home/drifted.out" 2> "$home/drifted.err"; then
+    fail "a partial-resolve retry closed the hold on a different captain decision"
+  fi
+  assert_grep "records a different captain decision" "$home/drifted.err" \
+    "the refusal must name the committed-decision mismatch"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the drifted retry closed the hold"
+  assert_contains "$show" "held: yes" "the drifted retry released the hold"
+  assert_not_contains "$show" "Use the west route instead." \
+    "the drifted retry overwrote the durably committed captain decision"
+  show=$(tasks_in "$home" show sample-partial-second --full)
+  assert_contains "$show" "blocked: yes" "the drifted retry cleared a dependency edge"
+
+  setup_partial_resolve falsified-drifted-retry "$origin" "$key" 'Use the east route.'
+  home=$PARTIAL_HOME
+  record="$home/drifted-decision.txt"
+  printf 'Use the west route instead.\n' > "$record"
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+  falsified=$(falsified_decision_hold "$home" committed-identity \
+    's/fail "captain hold \$id records a different captain decision"/: "captain hold $id records a different captain decision"/')
+  run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to sample-partial-first \
+    --routed-to sample-partial-second >/dev/null 2>&1 \
+    || fail "the falsifying edit did not reach the closure path it must expose"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" \
+    "the different-decision regression still passes without its identity refusal"
+  assert_contains "$show" "Use the west route instead." \
+    "the falsified run must close the hold on the drifted captain decision"
+  pass "a partial-resolve retry carrying a different decision is still refused"
+}
+
 test_ruling_wake_loads_the_single_lifecycle_owner() {
   assert_grep 'on a `captain-ruling <hold-id>[,<hold-id>...]` `check:` wake' "$AGENTS" \
     "AGENTS.md does not load the decision owner for captain-ruling wakes"
@@ -819,4 +949,6 @@ test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
+test_exact_retry_finishes_routing_after_a_revised_reply
+test_partial_retry_still_refuses_a_different_decision
 test_ruling_wake_loads_the_single_lifecycle_owner

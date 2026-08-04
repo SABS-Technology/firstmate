@@ -41,6 +41,9 @@
 # `fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the
 # prepared decision record, so a ruling revised during the agent turn is never closed
 # on superseded text. That read only ever refuses; it never supplies decision text.
+# The re-read is skipped only once the identical decision is already committed to the
+# hold body, because that retry finishes an existing close rather than deciding a new
+# one; a changed decision is still rejected by the retry identity record.
 # It writes the captain decision and routed identities into the hold body, clears
 # those dependency edges, and only then marks the hold Done. A failure before the
 # final step leaves the captain hold open.
@@ -495,7 +498,7 @@ command_resolve() {
     esac
   done
 
-  verify_decision_is_current "$id" "$decision"
+  [ "$resolution_recorded" = 1 ] || verify_decision_is_current "$id" "$decision"
 
   body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:' "$decision_digest" "$routed_csv" "$decision")
   for dep in $routed; do
