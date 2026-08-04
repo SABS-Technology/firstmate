@@ -59,7 +59,7 @@ test_union_includes_each_one_sided_failure_mode() {
       | .found_by == ["list_kind_captain"] and .orphan == true)
     and
     (.items[] | select(.id == "noncaptain-hold")
-      | .found_by == ["ready_include_held"] and .orphan == true)
+      | .found_by == ["ready_include_held","list_state_held"] and .orphan == true)
   ' >/dev/null || fail "one-sided queue members were omitted or misclassified: $json"
   pass "union includes cleared-hold and non-captain-kind failure modes"
 }
@@ -71,10 +71,38 @@ test_union_deduplicates_two_sided_item() {
   printf '%s' "$json" | jq -e '
     [.items[] | select(.id == "visible-both")] as $matches
     | ($matches | length) == 1
-      and $matches[0].found_by == ["ready_include_held","list_kind_captain"]
+      and $matches[0].found_by == ["ready_include_held","list_kind_captain","list_state_held"]
       and $matches[0].orphan == false
   ' >/dev/null || fail "two-sided item was duplicated or misclassified: $json"
   pass "union de-duplicates an item visible in both enumerations"
+}
+
+test_blocked_ordinary_hold_is_enumerated_once() {
+  local home json ready
+  home=$(make_fixture blocked-ordinary)
+  tasks_in "$home" add readiness-blocker "Independent ready blocker" \
+    --kind task --repo firstmate >/dev/null
+  tasks_in "$home" add ordinary-blocked "Blocked ordinary captain hold" \
+    --kind task --repo firstmate >/dev/null
+  tasks_in "$home" hold ordinary-blocked \
+    --reason "captain ruling pending behind blocker" --kind captain >/dev/null
+  tasks_in "$home" block ordinary-blocked --by readiness-blocker >/dev/null
+
+  ready=$(tasks_in "$home" ready --include-held)
+  assert_contains "$ready" "readiness-blocker," \
+    "independent blocker was not still represented in readiness"
+  assert_not_contains "$ready" "ordinary-blocked," \
+    "fixture did not reproduce ready --include-held omitting blocked work"
+
+  json=$(query_json "$home") || fail "canonical query failed: $json"
+  printf '%s' "$json" | jq -e '
+    [.items[] | select(.id == "ordinary-blocked")] as $matches
+    | ($matches | length) == 1
+      and $matches[0].found_by == ["list_state_held"]
+      and $matches[0].orphan == true
+      and ([.items[] | select(.id == "readiness-blocker")] | length) == 0
+  ' >/dev/null || fail "blocked ordinary captain hold was omitted or duplicated: $json"
+  pass "blocked ordinary captain hold appears once while blocker readiness stays separate"
 }
 
 test_json_contract_carries_required_fields() {
@@ -128,13 +156,14 @@ test_orphans_are_impossible_to_miss_and_read_only() {
   ' >/dev/null || fail "structured output hid an orphan: $json"
   assert_contains "$human" "ORPHAN cleared-hold [list_kind_captain]" \
     "human output did not identify the cleared-hold orphan and its source"
-  assert_contains "$human" "ORPHAN noncaptain-hold [ready_include_held]" \
+  assert_contains "$human" "ORPHAN noncaptain-hold [ready_include_held,list_state_held]" \
     "human output did not identify the non-captain-kind orphan and its source"
   pass "orphans are explicit in both formats and discovery mutates nothing"
 }
 
 test_union_includes_each_one_sided_failure_mode
 test_union_deduplicates_two_sided_item
+test_blocked_ordinary_hold_is_enumerated_once
 test_json_contract_carries_required_fields
 test_repo_aliases_normalize_without_backlog_writes
 test_orphans_are_impossible_to_miss_and_read_only

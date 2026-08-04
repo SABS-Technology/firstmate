@@ -16,9 +16,10 @@
 # Retired mappings remain in the generated region so D numbers are never reused.
 # Seed existing D labels in those records before the first generation.
 #
-# Queue orphans without ready_include_held membership have no active captain
-# hold for the ruling detector to accept. They remain visible in the projection
-# with an unavailable-reply warning and receive no misleading reply prefix.
+# Queue orphans without ready_include_held or list_state_held membership have no
+# active captain hold for the ruling detector to accept. They remain visible in
+# the projection with an unavailable-reply warning and receive no misleading
+# reply prefix.
 #
 # Usage: fm-pending-decisions-generate.sh
 set -eu
@@ -187,7 +188,8 @@ if ! jq -e '
     and (.id | test("^[A-Za-z0-9_-][A-Za-z0-9._-]*$"))
     and (.title | type) == "string"
     and (.found_by | type) == "array"
-    and all(.found_by[]; . == "ready_include_held" or . == "list_kind_captain")
+    and all(.found_by[];
+      . == "ready_include_held" or . == "list_kind_captain" or . == "list_state_held")
     and (.orphan | type) == "boolean"
     and (.hold_kind | type) == "string"
     and (.hold_reason | type) == "string"
@@ -196,7 +198,8 @@ if ! jq -e '
   fail "canonical captain queue returned an invalid fm-captain-queue.v1 document"
 fi
 jq -r '.items[].id' "$QUEUE_JSON" > "$QUEUE_IDS"
-jq -r '.items[] | select(.found_by | index("ready_include_held")) | .id' \
+jq -r '.items[] | select(
+  (.found_by | index("ready_include_held")) or (.found_by | index("list_state_held"))) | .id' \
   "$QUEUE_JSON" > "$REPLYABLE_IDS"
 max_label=$(awk -F '\t' '
   { value = substr($1, 2) + 0; if (value > maximum) maximum = value }
@@ -235,7 +238,7 @@ jq -r --slurpfile labels "$LABELS_JSON" '
         + "- **Origin task:** `\(.id)`\n"
         + "- **Repository:** `\(.repo | markdown)`\n"
         + "- **Queue status:** "
-        + (if (.found_by | index("ready_include_held")) then
+        + (if ((.found_by | index("ready_include_held")) or (.found_by | index("list_state_held"))) then
             (if .orphan then "active captain hold; queue orphan disclosed."
              else "active captain hold."
              end)

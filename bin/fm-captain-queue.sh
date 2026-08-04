@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # fm-captain-queue.sh - canonical read-only query for captain-held work.
 #
-# `tasks-axi ready --include-held` finds active captain holds but misses captain
-# items whose hold was cleared outside fm-decision-hold.sh. `tasks-axi list
-# --kind captain` finds those items but misses captain holds on another task kind.
-# This command unions both views by task id and reports asymmetric membership as
-# an orphan. It never repairs holds or changes backlog data.
+# `tasks-axi ready --include-held` finds active unblocked captain holds but misses
+# blocked work. `tasks-axi list --kind captain` finds captain-kind items but
+# misses captain holds on another task kind. `tasks-axi list --state held`
+# supplies the queued held-state view needed for blocked ordinary-kind holds.
+# This command unions all three views by task id and reports mismatches between
+# active captain holds and captain-kind items as orphans. It never repairs holds
+# or changes backlog data.
 #
 # Usage:
 #   fm-captain-queue.sh [--json]
@@ -13,8 +15,9 @@
 # The JSON contract is `fm-captain-queue.v1`:
 #   {schema,count,orphan_count,items:[...]}
 # Every item contains id, title, found_by, orphan, hold_kind, hold_reason, and
-# normalized repo. `found_by` uses the stable values `ready_include_held` and
-# `list_kind_captain`. An item is an orphan when exactly one view found it.
+# normalized repo. `found_by` uses the stable values `ready_include_held`,
+# `list_kind_captain`, and `list_state_held`. An item is an orphan when an active
+# captain hold is not captain-kind or a captain-kind item lacks an active hold.
 # Known sabstech aliases normalize to `sabstech`; `firstmate` stays `firstmate`.
 set -eu
 
@@ -87,9 +90,11 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 READY_OUTPUT=$(tasks_axi ready --include-held) || fail "tasks-axi ready --include-held failed"
 LIST_OUTPUT=$(tasks_axi list --kind captain) || fail "tasks-axi list --kind captain failed"
+HELD_OUTPUT=$(tasks_axi list --state held) || fail "tasks-axi list --state held failed"
 printf '%s\n' "$READY_OUTPUT" | extract_group_ids held | LC_ALL=C sort -u > "$TMP_DIR/ready.ids"
 printf '%s\n' "$LIST_OUTPUT" | extract_group_ids tasks | LC_ALL=C sort -u > "$TMP_DIR/list.ids"
-LC_ALL=C sort -u "$TMP_DIR/ready.ids" "$TMP_DIR/list.ids" > "$TMP_DIR/candidates.ids"
+printf '%s\n' "$HELD_OUTPUT" | extract_group_ids tasks | LC_ALL=C sort -u > "$TMP_DIR/held.ids"
+LC_ALL=C sort -u "$TMP_DIR/ready.ids" "$TMP_DIR/list.ids" "$TMP_DIR/held.ids" > "$TMP_DIR/candidates.ids"
 : > "$TMP_DIR/items.ndjson"
 
 while IFS= read -r id; do
@@ -101,6 +106,7 @@ while IFS= read -r id; do
   hold_kind=$(show_field "$show" hold_kind)
   in_ready=false
   in_list=false
+  in_held=false
   if grep -Fqx -- "$id" "$TMP_DIR/ready.ids" \
     && [ "$state" = queued ] && [ "$held" = yes ] && [ "$hold_kind" = captain ]; then
     in_ready=true
@@ -109,16 +115,22 @@ while IFS= read -r id; do
     && [ "$state" = queued ] && [ "$kind" = captain ]; then
     in_list=true
   fi
-  [ "$in_ready" = true ] || [ "$in_list" = true ] || continue
+  if grep -Fqx -- "$id" "$TMP_DIR/held.ids" \
+    && [ "$state" = queued ] && [ "$held" = yes ] && [ "$hold_kind" = captain ]; then
+    in_held=true
+  fi
+  [ "$in_ready" = true ] || [ "$in_list" = true ] || [ "$in_held" = true ] || continue
 
-  if [ "$in_ready" = true ] && [ "$in_list" = true ]; then
-    found_by='["ready_include_held","list_kind_captain"]'
+  found_by=$(jq -cn \
+    --argjson in_ready "$in_ready" \
+    --argjson in_list "$in_list" \
+    --argjson in_held "$in_held" \
+    '[if $in_ready then "ready_include_held" else empty end,
+      if $in_list then "list_kind_captain" else empty end,
+      if $in_held then "list_state_held" else empty end]')
+  if { [ "$in_ready" = true ] || [ "$in_held" = true ]; } && [ "$in_list" = true ]; then
     orphan=false
-  elif [ "$in_ready" = true ]; then
-    found_by='["ready_include_held"]'
-    orphan=true
   else
-    found_by='["list_kind_captain"]'
     orphan=true
   fi
 

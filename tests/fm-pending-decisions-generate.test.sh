@@ -213,6 +213,27 @@ test_regeneration_is_stable_and_reply_append_only() {
   pass "unchanged regeneration is byte-stable and does not duplicate reply prefixes"
 }
 
+test_blocked_ordinary_hold_is_generated_once() {
+  local home generated
+  home=$(make_home blocked-ordinary)
+  generated="$home/generated.txt"
+  tasks_in "$home" add readiness-blocker "Independent ready blocker" \
+    --kind task --repo firstmate >/dev/null
+  tasks_in "$home" add ordinary-blocked "Blocked ordinary captain hold" \
+    --kind task --repo firstmate >/dev/null
+  tasks_in "$home" hold ordinary-blocked \
+    --reason "captain ruling pending behind blocker" --kind captain >/dev/null
+  tasks_in "$home" block ordinary-blocked --by readiness-blocker >/dev/null
+
+  run_generator "$home" >/dev/null || fail "generator failed on a blocked ordinary hold"
+  extract_region "$home/data/pending-decisions.md" "$QUEUE_BEGIN" "$QUEUE_END" "$generated"
+  [ "$(grep -Fc 'Blocked ordinary captain hold' "$generated")" = 1 ] \
+    || fail "blocked ordinary captain hold was absent or duplicated in generated output"
+  assert_no_grep 'Independent ready blocker' "$generated" \
+    "ordinary blocker leaked into the captain decision projection"
+  pass "blocked ordinary captain hold is generated once without conflating its blocker"
+}
+
 test_unanswerable_orphan_is_visible_without_a_swallowed_prefix() {
   local home pending generated replies
   home=$(make_home unanswerable-orphan)
@@ -271,5 +292,6 @@ run_case() { # <case-name> <function>
 run_case projection test_projection_preserves_manual_bytes_and_backlog
 run_case detector test_reply_prefixes_wake_the_real_detector
 run_case stable test_regeneration_is_stable_and_reply_append_only
+run_case blocked-ordinary test_blocked_ordinary_hold_is_generated_once
 run_case orphan test_unanswerable_orphan_is_visible_without_a_swallowed_prefix
 run_case markers test_marker_failures_leave_target_untouched
