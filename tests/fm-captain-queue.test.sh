@@ -100,6 +100,7 @@ test_blocked_ordinary_hold_is_enumerated_once() {
     | ($matches | length) == 1
       and $matches[0].found_by == ["list_state_held"]
       and $matches[0].orphan == true
+      and $matches[0].replyable == true
       and ([.items[] | select(.id == "readiness-blocker")] | length) == 0
   ' >/dev/null || fail "blocked ordinary captain hold was omitted or duplicated: $json"
   pass "blocked ordinary captain hold appears once while blocker readiness stays separate"
@@ -127,7 +128,7 @@ test_open_in_flight_holds_are_deduplicated_and_done_is_excluded() {
       and (.items[] | select(.id == "inflight-captain")
         | .found_by == ["list_kind_captain","list_state_held"])
       and (.items[] | select(.id == "inflight-ordinary")
-        | .found_by == ["list_state_held"])
+        | .found_by == ["list_state_held"] and .replyable == true)
   ' >/dev/null || fail "active captain holds were omitted, duplicated, or mixed with Done: $json"
   pass "queued and in-flight hold discovery is exact while Done stays excluded"
 }

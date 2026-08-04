@@ -18,9 +18,9 @@
 # normalized repo, structured origin and decision key, and replyability.
 # `found_by` uses the stable values `ready_include_held`, `list_kind_captain`,
 # and `list_state_held`. An item is an orphan when an active captain hold is not
-# captain-kind or a captain-kind item lacks an active hold. A replyable item must
-# also be a captain-kind record whose validated Origin and Decision key fields
-# reconstruct its exact backlog identity.
+# captain-kind or a captain-kind item lacks an active hold. Every active captain
+# hold on ordinary work is replyable. A captain-kind item is replyable only when
+# validated Origin and Decision key fields reconstruct its exact identity.
 # Known sabstech aliases normalize to `sabstech`; `firstmate` stays `firstmate`.
 set -eu
 
@@ -166,7 +166,7 @@ while IFS= read -r id; do
     decision_key=''
   fi
   replyable=false
-  if [ "$structured" = true ] && [ "$kind" = captain ] \
+  if { [ "$kind" != captain ] || [ "$structured" = true ]; } \
     && { [ "$in_ready" = true ] || [ "$in_held" = true ]; }; then
     replyable=true
   fi

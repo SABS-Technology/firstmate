@@ -131,8 +131,8 @@ SH
   chmod +x "$fakebin/tasks-axi"
 }
 
-test_captain_hold_on_task_kind_is_not_replyable() {
-  local world home fakebin pending out
+test_captain_hold_on_task_kind_is_replyable() {
+  local world home fakebin pending out answer
   world=$(make_home task-kind); home=${world%%|*}; fakebin=${world#*|}
   pending="$home/data/pending-decisions.md"
   cat > "$pending" <<'EOF'
@@ -147,13 +147,13 @@ no-active-captain-hold: this must stay silent
 EOF
 
   out=$(run_check "$home" "$fakebin") || fail "task-kind captain-hold check failed"
-  [ -z "$out" ] \
-    || fail "ordinary-kind captain hold emitted an unprocessable ruling wake: $out"
-  if read_answer "$home" "$fakebin" spec-decision-canonicity \
-    > "$home/ordinary.out" 2> "$home/ordinary.err"; then
-    fail "answer reader accepted an ordinary-kind captain hold"
-  fi
-  pass "ordinary-kind captain holds cannot emit ruling wakes or answers"
+  [ "$out" = 'captain-ruling spec-decision-canonicity' ] \
+    || fail "ordinary-kind captain hold did not emit its ruling wake: $out"
+  answer=$(read_answer "$home" "$fakebin" spec-decision-canonicity) \
+    || fail "answer reader rejected an ordinary-kind captain hold"
+  [ "$answer" = 'approve code and tests as canonical' ] \
+    || fail "answer reader returned the wrong ordinary-kind ruling: $answer"
+  pass "ordinary-kind captain holds emit ruling wakes and exact answers"
 }
 
 make_home() {
@@ -385,7 +385,7 @@ test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
 test_partial_reply_region_waits_for_completion
 test_detection_survives_heading_moves_and_renames
-test_captain_hold_on_task_kind_is_not_replyable
+test_captain_hold_on_task_kind_is_replyable
 test_answer_reads_latest_complete_open_ruling_without_mutation
 test_answer_ingestion_refuses_while_resolution_lock_is_held
 test_file_ruling_channel_declares_accepted_untrusted_boundary

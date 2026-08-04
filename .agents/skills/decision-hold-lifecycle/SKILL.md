@@ -21,7 +21,8 @@ After inventorying the whole report and review surface, run `bin/fm-decision-hol
 A completed investigation and an ended visual review use this same owner and completion command; a visual tool, including Lavish, never owns a parallel completion policy.
 Run the command in the originating work's authoritative `FM_HOME`; main-home work creates main-home holds, and secondmate-owned work creates holds in that secondmate home's backlog rather than copying them into the main backlog.
 Do not close a hold merely because the originating investigation completed, its report was archived, its visual review ended, or its task was torn down.
-The hold remains the authoritative Captain's Call item until the captain's answer is durably recorded, dependent work is created in the same backlog and blocked by that hold, and `bin/fm-decision-hold.sh resolve` routes the answer by clearing those dependency edges before closing the hold.
+A dedicated captain-kind hold remains the authoritative Captain's Call item until the captain's answer is durably recorded, dependent work is created in the same backlog and blocked by that hold, and `bin/fm-decision-hold.sh resolve` routes the answer by clearing those dependency edges before closing the hold.
+An ordinary work item carrying a captain hold remains the work owner; `resolve-item` records the decision and clears only its hold, and must never complete that work item or release dependencies that represent completion of the work.
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create holds.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.
 A status change is not ruling ingestion and must never substitute for the decision record, dependent work, dependency edges, or guarded resolution.
@@ -40,16 +41,21 @@ A status change is not ruling ingestion and must never substitute for the decisi
 
 When a `check:` wake contains `captain-ruling <hold-id>[,<hold-id>...]`, process every named identity in the authoritative `FM_HOME` before returning to routine queue work.
 The wake deliberately contains identities rather than answer text, so read each exact current answer with `bin/fm-captain-ruling-check.sh --answer <hold-id>`.
-Read `tasks-axi show <hold-id> --full` and take the originating work id and decision key from its body rather than reconstructing them by splitting the hold identity.
-Interpret the ruling and author at least one concrete dependent work item that applies it, including when applying the answer means recording a deliberate no-go or scope closure.
-Create new work with normal `tasks-axi add` fields and `--blocked-by <hold-id>`, or add that edge to an existing routed item with `tasks-axi block`.
+Read `tasks-axi show <hold-id> --full` and use its kind to select the matching guarded resolution path.
+For a captain-kind hold, take the originating work id and decision key from its body rather than reconstructing them by splitting the hold identity.
+Interpret the ruling and author at least one concrete dependent work item for a captain-kind hold, including when applying the answer means recording a deliberate no-go or scope closure.
+Create that work with normal `tasks-axi add` fields and `--blocked-by <hold-id>`, or add that edge to an existing routed item with `tasks-axi block`.
 Keep every dependent item in the same authoritative home as the hold and point its durable body or brief at the decision record rather than copying the ruling into multiple owners.
+For an ordinary-kind item, keep the existing work item as the implementation owner and do not invent a dependent, clear its work dependencies, or complete it as part of ruling resolution.
 Write the captain's exact answer to the private durable record `data/decisions/<hold-id>.md` in that home.
 Record the captain's reply verbatim, because `resolve` re-reads the current reply and refuses when the record no longer matches it.
-Call `bin/fm-decision-hold.sh resolve <origin-id> <decision-key> --decision-file data/decisions/<hold-id>.md --routed-to <task-id>` with every routed identity.
-`resolve` also refuses while any task it discovers is still blocked by the hold and absent from `--routed-to`, so route each such task rather than working around the refusal.
-Only after `resolve` succeeds may the dependent work be treated as unblocked, dispatched or handed off, and the pending-decisions projection regenerated.
-Confirm the hold left the canonical captain queue and the routed work remains in the structured backlog.
+For a captain-kind hold, call `bin/fm-decision-hold.sh resolve <origin-id> <decision-key> --decision-file data/decisions/<hold-id>.md --routed-to <task-id>` with every routed identity.
+`resolve` also refuses while any task it discovers is still blocked by a captain-kind hold and absent from `--routed-to`, so route each such task rather than working around the refusal.
+For an ordinary-kind item, call `bin/fm-decision-hold.sh resolve-item <hold-id> --decision-file data/decisions/<hold-id>.md`; that command clears only the captain hold and leaves the work active.
+Only after `resolve` succeeds may captain-kind dependent work proceed.
+Only after `resolve-item` succeeds may the ordinary work item proceed.
+Regenerate the pending-decisions projection after the matching command succeeds.
+Confirm the decision left the canonical captain queue and the routed or ordinary work remains in the structured backlog.
 If any creation, dependency, decision-record, or resolve step fails, leave the hold open, preserve the already-authored state, and retry the same identities rather than directly unholding or completing the hold.
 Retry with the decision record already prepared for that hold rather than re-reading `--answer` into a fresh record, because a retry carrying different decision text is refused even after the captain revised the reply.
 

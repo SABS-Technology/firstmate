@@ -12,6 +12,7 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 CAPTAIN_QUEUE="$ROOT/bin/fm-captain-queue.sh"
 RULING_CHECK="$ROOT/bin/fm-captain-ruling-check.sh"
+PENDING_GENERATOR="$ROOT/bin/fm-pending-decisions-generate.sh"
 DECISION_SKILL="$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md"
 AGENTS="$ROOT/AGENTS.md"
 TMP_ROOT=$(fm_test_tmproot fm-decision-hold)
@@ -1024,7 +1025,7 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   assert_contains "$show" "blocked: yes" "the superseded resolve cleared a dependency edge"
 
   falsified=$(falsified_decision_hold "$home" freshness \
-    's/fail "captain hold \$id has a newer/: "captain hold $id has a newer/; s/! captain_answer_matches "\$id" "\$decision"/! true/')
+    's/fail "captain hold \$id has a newer/: "captain hold $id has a newer/; s/^  captain_answer_matches "\$1" "\$2" && return 0$/  return 0/')
   run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
     --decision-file "$record" --routed-to sample-superseded-work >/dev/null 2>&1 \
     || fail "the falsifying edit did not reach the closure path it must expose"
@@ -1051,7 +1052,7 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   pass "resolve re-reads the captain ruling and refuses a superseded decision record"
 }
 
-test_resolve_cas_refuses_ruling_changed_at_body_update_boundary() {
+test_resolve_cas_refuses_ruling_changed_during_dependency_unblock() {
   local home origin=sample-cas-review key=route hold record show
   hold="$origin-decision-$key"
   home=$(make_ruling_home ruling-cas-boundary "$origin" "$key" 'Use the east route.')
@@ -1062,7 +1063,7 @@ test_resolve_cas_refuses_ruling_changed_at_body_update_boundary() {
   cat > "$home/fakebin/tasks-axi" <<EOF
 #!/usr/bin/env bash
 set -eu
-if [ "\${1:-}" = update ] && [ "\${2:-}" = "$hold" ] \
+if [ "\${1:-}" = unblock ] && [ "\${2:-}" = sample-cas-work ] \
   && [ ! -f "$home/ruling-revised" ]; then
   cat > "$home/data/pending-decisions.md" <<'REPLY'
 # Captain decisions
@@ -1079,7 +1080,7 @@ EOF
 
   if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
     --routed-to sample-cas-work > "$home/cas.out" 2> "$home/cas.err"; then
-    fail "resolve closed on ruling text superseded at the body-update boundary"
+    fail "resolve closed on ruling text superseded during dependency unblocking"
   fi
   show=$(tasks_in "$home" show "$hold" --full)
   assert_contains "$show" "state: queued" "CAS refusal closed the hold"
@@ -1097,7 +1098,109 @@ EOF
   assert_contains "$show" "state: done" "revised ruling did not close after CAS retry"
   assert_contains "$show" "Use the west route instead." \
     "CAS retry did not commit the revised ruling"
-  pass "ruling revision CAS prevents closure on text changed at the update boundary"
+  pass "ruling revision CAS covers the body write, dependency unblock, and close window"
+}
+
+write_pending_skeleton() {  # <home>
+  cat > "$1/data/pending-decisions.md" <<'EOF'
+# Captain decisions
+
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+<!-- END APPEND-ONLY: captain-replies -->
+
+<!-- BEGIN GENERATED: captain-queue -->
+<!-- END GENERATED: captain-queue -->
+EOF
+}
+
+answer_generated_prefix() {  # <pending> <id> <answer>
+  local pending=$1 id=$2 answer=$3
+  perl -0pi -e '
+    BEGIN { $id = shift @ARGV; $answer = shift @ARGV }
+    s/^\Q$id\E: \n/$id: $answer\n/m or die "reply prefix absent\n";
+  ' "$id" "$answer" "$pending"
+}
+
+test_in_flight_captain_hold_resolves_end_to_end() {
+  local home origin=sample-inflight-review key=route hold dependent answer wake record show
+  hold="$origin-decision-$key"
+  dependent=sample-inflight-work
+  home=$(make_home inflight-captain-resolution)
+  mkdir -p "$home/data/$origin" "$home/data/decisions"
+  tasks_in "$home" add "$origin" "Review the in-flight sample route" \
+    --kind scout --repo sample --start >/dev/null
+  write_origin_meta "$home" "$origin"
+  run_decisions "$home" hold "$origin" "$key" \
+    --title "Choose the in-flight sample route" \
+    --reason "captain route pending" --repo sample >/dev/null
+  tasks_in "$home" start "$hold" >/dev/null \
+    || fail "could not move the captain hold in flight"
+  run_decisions "$home" complete "$origin" "$key" >/dev/null \
+    || fail "durability verification rejected an in-flight captain hold"
+  tasks_in "$home" add "$dependent" "Apply the in-flight sample route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  mkdir -p "$home/data/$dependent"
+  printf 'Decision record: data/decisions/%s.md\n' "$hold" \
+    > "$home/data/$dependent/brief.md"
+  write_pending_skeleton "$home"
+  FM_HOME="$home" "$PENDING_GENERATOR" >/dev/null \
+    || fail "generator rejected an in-flight captain hold"
+  answer_generated_prefix "$home/data/pending-decisions.md" "$hold" 'Use the east route.'
+  wake=$(FM_HOME="$home" "$RULING_CHECK") \
+    || fail "detector rejected the in-flight captain ruling"
+  [ "$wake" = "captain-ruling $hold" ] \
+    || fail "in-flight ruling emitted the wrong wake: $wake"
+  answer=$(FM_HOME="$home" "$RULING_CHECK" --answer "$hold") \
+    || fail "answer read rejected the in-flight captain hold"
+  record="$home/data/decisions/$hold.md"
+  printf '%s\n' "$answer" > "$record"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to "$dependent" >/dev/null \
+    || fail "guarded resolve rejected an in-flight captain hold"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "in-flight captain hold did not resolve"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" "blocked: no" "in-flight resolution left its dependent blocked"
+  pass "in-flight captain holds generate, wake, read, record, route, and resolve"
+}
+
+test_ordinary_work_decision_resolves_without_completing_work() {
+  local home id=sample-ordinary-work answer wake record show queue
+  home=$(make_home ordinary-work-resolution)
+  mkdir -p "$home/data/decisions"
+  tasks_in "$home" add "$id" "Implement ordinary sample work" \
+    --kind ship --repo sample \
+    --body 'Keep this work payload.' >/dev/null
+  tasks_in "$home" hold "$id" --reason "captain route pending" --kind captain >/dev/null
+  write_pending_skeleton "$home"
+  FM_HOME="$home" "$PENDING_GENERATOR" >/dev/null \
+    || fail "generator rejected a captain hold carried by ordinary work"
+  assert_grep "$id: " "$home/data/pending-decisions.md" \
+    "ordinary work decision did not receive a reply prefix"
+  answer_generated_prefix "$home/data/pending-decisions.md" "$id" 'Use the east route.'
+  wake=$(FM_HOME="$home" "$RULING_CHECK") \
+    || fail "detector rejected the ordinary-work captain ruling"
+  [ "$wake" = "captain-ruling $id" ] \
+    || fail "ordinary-work ruling emitted the wrong wake: $wake"
+  answer=$(FM_HOME="$home" "$RULING_CHECK" --answer "$id") \
+    || fail "answer read rejected the ordinary-work captain hold"
+  record="$home/data/decisions/$id.md"
+  printf '%s\n' "$answer" > "$record"
+  run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null \
+    || fail "ordinary-work captain decision did not resolve"
+  show=$(tasks_in "$home" show "$id" --full)
+  assert_contains "$show" "state: queued" "decision resolution completed the underlying work item"
+  assert_contains "$show" "kind: ship" "decision resolution changed the underlying work kind"
+  assert_contains "$show" "held: no" "decision resolution left the ordinary work held"
+  assert_contains "$show" "Keep this work payload." "decision resolution discarded the work payload"
+  assert_contains "$show" "Captain decision recorded by fm-decision-hold" \
+    "ordinary work lost its durable decision-resolution pointer"
+  queue=$(FM_HOME="$home" "$CAPTAIN_QUEUE" --json) \
+    || fail "captain queue failed after ordinary-work resolution"
+  printf '%s' "$queue" | jq -e --arg id "$id" \
+    'any(.items[]; .id == $id) | not' >/dev/null \
+    || fail "resolved ordinary decision remained in the open captain queue: $queue"
+  pass "ordinary-kind replies resolve only the captain hold and never complete the work item"
 }
 
 PARTIAL_HOME=''
@@ -1265,7 +1368,9 @@ test_resolve_enforces_session_lock_and_stable_dependent_set
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
-test_resolve_cas_refuses_ruling_changed_at_body_update_boundary
+test_resolve_cas_refuses_ruling_changed_during_dependency_unblock
+test_in_flight_captain_hold_resolves_end_to_end
+test_ordinary_work_decision_resolves_without_completing_work
 test_exact_retry_finishes_routing_after_a_revised_reply
 test_partial_retry_still_refuses_a_different_decision
 test_ruling_wake_loads_the_single_lifecycle_owner

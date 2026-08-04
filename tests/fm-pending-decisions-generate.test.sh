@@ -125,6 +125,7 @@ normalize_manual_bytes() { # <file> <strip-generated-prefixes: yes|no> <output>
       or die "generated region missing\n";
     if ($strip eq "yes") {
       $data =~ s/^captain-origin-decision-alpha: \n//m or die "alpha prefix missing\n";
+      $data =~ s/^ordinary-origin-decision-beta: \n//m or die "beta prefix missing\n";
     }
     print $data;
   ' "$1" "$2" "$QUEUE_BEGIN" "$QUEUE_END" > "$3"
@@ -182,11 +183,11 @@ test_projection_preserves_manual_bytes_and_backlog() {
 
   extract_region "$pending" "$REPLY_BEGIN" "$REPLY_END" "$replies_after"
   cp "$replies_before" "$replies_expected"
-  printf 'captain-origin-decision-alpha: \n' >> "$replies_expected"
+  printf 'captain-origin-decision-alpha: \nordinary-origin-decision-beta: \n' >> "$replies_expected"
   cmp -s "$replies_expected" "$replies_after" \
     || fail "reply-zone content was removed, reordered, rewritten, or not append-only"
-  assert_no_grep 'ordinary-origin-decision-beta:' "$replies_after" \
-    "ordinary work item received a reply prefix it cannot resolve"
+  assert_grep 'ordinary-origin-decision-beta: ' "$replies_after" \
+    "ordinary work item did not receive its resolvable reply prefix"
   pass "canonical items and counts project once with every required field"
   pass "all hand-written and existing reply bytes survive while backlog stays unchanged"
 }
@@ -200,13 +201,11 @@ test_reply_prefixes_wake_the_real_detector() {
     s/captain-origin-decision-alpha: \n/captain-origin-decision-alpha: choose alpha\nordinary-origin-decision-beta: choose beta\n/;
   ' "$pending"
   out=$(FM_HOME="$home" "$RULING_CHECK") || fail "real ruling detector failed"
-  [ "$out" = 'captain-ruling captain-origin-decision-alpha' ] \
-    || fail "ruling detector accepted an ordinary-kind hold or missed the lifecycle hold: $out"
-  if FM_HOME="$home" "$RULING_CHECK" --answer ordinary-origin-decision-beta \
-    > "$home/ordinary-answer.out" 2> "$home/ordinary-answer.err"; then
-    fail "answer reader accepted an ordinary-kind hold that resolve cannot close"
-  fi
-  pass "ordinary-kind holds stay visible but cannot emit an unprocessable ruling wake"
+  [ "$out" = 'captain-ruling captain-origin-decision-alpha,ordinary-origin-decision-beta' ] \
+    || fail "generated prefixes did not wake for every active captain hold: $out"
+  [ "$(FM_HOME="$home" "$RULING_CHECK" --answer ordinary-origin-decision-beta)" = 'choose beta' ] \
+    || fail "ordinary-kind generated ruling could not be read"
+  pass "generated prefixes wake and return answers for captain and ordinary task kinds"
 }
 
 test_regeneration_is_stable_and_reply_append_only() {
@@ -239,6 +238,8 @@ test_blocked_ordinary_hold_is_generated_once() {
     || fail "blocked ordinary captain hold was absent or duplicated in generated output"
   assert_no_grep 'Independent ready blocker' "$generated" \
     "ordinary blocker leaked into the captain decision projection"
+  assert_grep 'ordinary-blocked: ' "$home/data/pending-decisions.md" \
+    "blocked ordinary captain hold did not receive a reply prefix"
   pass "blocked ordinary captain hold is generated once without conflating its blocker"
 }
 
@@ -259,8 +260,8 @@ test_unanswerable_orphan_is_visible_without_a_swallowed_prefix() {
     "list-only queue orphan was not visibly marked unanswerable"
   assert_no_grep 'captain-origin-decision-alpha:' "$replies" \
     "list-only orphan received a reply prefix the detector would swallow"
-  assert_no_grep 'ordinary-origin-decision-beta:' "$replies" \
-    "ordinary queue orphan received an unresolvable reply prefix"
+  assert_grep 'ordinary-origin-decision-beta: ' "$replies" \
+    "active ordinary queue orphan lost its resolvable reply prefix"
   pass "unanswerable queue orphans stay visible and never receive a silently swallowed prefix"
 }
 

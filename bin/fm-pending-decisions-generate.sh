@@ -16,9 +16,9 @@
 # Retired mappings remain in the generated region so D numbers are never reused.
 # Seed existing D labels in those records before the first generation.
 #
-# Only lifecycle-compatible captain-kind records receive reply prefixes.
-# Other queue members remain visible with an unavailable-reply warning, and
-# their displayed origin comes only from validated structured hold data.
+# Every active captain hold carried by ordinary work receives a reply prefix.
+# Captain-kind records remain replyable only when their structured identity is
+# valid. Other queue members stay visible with an unavailable-reply warning.
 #
 # Usage: fm-pending-decisions-generate.sh
 set -eu
@@ -245,7 +245,7 @@ jq -r --slurpfile labels "$LABELS_JSON" '
              else "active captain hold."
              end)
           elif ((.found_by | index("ready_include_held")) or (.found_by | index("list_state_held"))) then
-            "reply unavailable; this item is not a lifecycle-compatible captain decision."
+            "reply unavailable; this item is not a structured active captain decision."
           else
             "reply unavailable; this queue orphan has no active captain hold for the ruling detector."
           end))
