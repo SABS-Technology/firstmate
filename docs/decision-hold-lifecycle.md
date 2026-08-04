@@ -24,6 +24,8 @@ Scout teardown calls the script's read-only `verify` subcommand after checking f
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
+It enumerates the active home's blocked work through `tasks-axi list --blocked` and refuses while any task it finds still carries a `blocked-by` edge to the hold without being named by `--routed-to`, so the caller's list can no longer under-report dependent work.
+It re-reads the captain's current reply through `bin/fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the prepared decision record, which narrows the supersession window to the resolve call itself; that read only ever refuses and never supplies decision text.
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 A failed intermediate step leaves the hold open.
@@ -54,6 +56,7 @@ The focused end-to-end regression uses only synthetic `sample` identities and de
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+The undisclosed-dependent and superseded-ruling regressions each carry an anti-tautology proof: the same fixture is replayed against a copy of `bin/fm-decision-hold.sh` whose single refusal has been turned into a no-op, and the proof asserts that the falsified copy closes the hold.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -69,6 +72,8 @@ ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
 ok - a detected ruling becomes durable dependent work before its hold closes
+ok - resolve discovers every still-blocked dependent and refuses an undisclosed one
+ok - resolve re-reads the captain ruling and refuses a superseded decision record
 ok - captain-ruling wakes load the single lifecycle owner and preserve close ordering
 
 $ bash tests/fm-captain-ruling-check.test.sh

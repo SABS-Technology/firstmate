@@ -45,7 +45,9 @@ Interpret the ruling and author at least one concrete dependent work item that a
 Create new work with normal `tasks-axi add` fields and `--blocked-by <hold-id>`, or add that edge to an existing routed item with `tasks-axi block`.
 Keep every dependent item in the same authoritative home as the hold and point its durable body or brief at the decision record rather than copying the ruling into multiple owners.
 Write the captain's exact answer to the private durable record `data/decisions/<hold-id>.md` in that home.
+Record the captain's reply verbatim, because `resolve` re-reads the current reply and refuses when the record no longer matches it.
 Call `bin/fm-decision-hold.sh resolve <origin-id> <decision-key> --decision-file data/decisions/<hold-id>.md --routed-to <task-id>` with every routed identity.
+`resolve` also refuses while any task it discovers is still blocked by the hold and absent from `--routed-to`, so route each such task rather than working around the refusal.
 Only after `resolve` succeeds may the dependent work be treated as unblocked, dispatched or handed off, and the pending-decisions projection regenerated.
 Confirm the hold left the canonical captain queue and the routed work remains in the structured backlog.
 If any creation, dependency, decision-record, or resolve step fails, leave the hold open, preserve the already-authored state, and retry the same identities rather than directly unholding or completing the hold.

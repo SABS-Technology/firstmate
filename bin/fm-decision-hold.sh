@@ -34,6 +34,13 @@
 # source before this gate has succeeded.
 #
 # `resolve` requires every --routed-to task to exist and to be blocked by the hold.
+# It also discovers every other task in the active home that is still blocked by
+# that hold and refuses while any of them is absent from --routed-to, so the caller
+# cannot close a hold that still owns undisclosed dependent work.
+# It then re-reads the captain's current reply through
+# `fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the
+# prepared decision record, so a ruling revised during the agent turn is never closed
+# on superseded text. That read only ever refuses; it never supplies decision text.
 # It writes the captain decision and routed identities into the hold body, clears
 # those dependency edges, and only then marks the hold Done. A failure before the
 # final step leaves the captain hold open.
@@ -44,6 +51,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+RULING_CHECK="$SCRIPT_DIR/fm-captain-ruling-check.sh"
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -113,6 +121,57 @@ task_show() {  # <id>
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
+}
+
+blocked_edges() {  # <show-output>
+  local blocked
+  # tasks-axi quotes multi-entry blocked_by as "a,b,c"; strip so edge ids match.
+  blocked=$(show_field "$1" blocked_by | tr -d '[:space:]')
+  blocked=${blocked#\"}
+  blocked=${blocked%\"}
+  printf '%s' "$blocked"
+}
+
+blocked_row_ids() {
+  awk '
+    /^tasks\[[0-9]+\]\{/ { in_group = 1; next }
+    in_group && /^[[:alnum:]_]+\[[0-9]+\]/ { in_group = 0 }
+    in_group && /^  [A-Za-z0-9._-]+,/ {
+      row = $0
+      sub(/^  /, "", row)
+      sub(/,.*/, "", row)
+      print row
+    }
+  '
+}
+
+hold_dependents() {  # <hold-id>
+  local id=$1 listing dep show
+  listing=$(tasks_axi list --blocked --fields blocked_by) || return 1
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    show=$(task_show "$dep") || return 1
+    case ",$(blocked_edges "$show")," in
+      *",$id,"*) printf '%s\n' "$dep" ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$listing" | blocked_row_ids)
+EOF
+}
+
+current_captain_answer() {  # <hold-id>
+  [ -x "$RULING_CHECK" ] || return 1
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    FM_PENDING_DECISIONS_OVERRIDE="$DATA/pending-decisions.md" \
+    "$RULING_CHECK" --answer "$1" 2>/dev/null
+}
+
+verify_decision_is_current() {  # <hold-id> <decision>
+  local id=$1 decision=$2 answer
+  answer=$(current_captain_answer "$id") || return 0
+  [ -n "$answer" ] || return 0
+  [ "$answer" = "$decision" ] \
+    || fail "captain hold $id has a newer captain reply than the prepared decision record"
 }
 
 origin_exists_here() {  # <origin-id>
@@ -368,7 +427,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body dependents resolution_recorded=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -415,10 +474,7 @@ command_resolve() {
     state=$(show_field "$show" state)
     [ "$state" != "done" ] || [ "$resolution_recorded" = 1 ] \
       || fail "routed task $dep is already done"
-    # tasks-axi quotes multi-entry blocked_by as "a,b,c"; strip so edge ids match.
-    blocked=$(show_field "$show" blocked_by | tr -d '[:space:]')
-    blocked=${blocked#\"}
-    blocked=${blocked%\"}
+    blocked=$(blocked_edges "$show")
     case ",$blocked," in
       *",$id,"*) : ;;
       *)
@@ -430,6 +486,17 @@ command_resolve() {
     esac
   done
 
+  dependents=$(hold_dependents "$id") \
+    || fail "could not enumerate the work blocked by $id"
+  for dep in $dependents; do
+    case " $routed " in
+      *" $dep "*) : ;;
+      *) fail "task $dep is still blocked by $id and is not routed" ;;
+    esac
+  done
+
+  verify_decision_is_current "$id" "$decision"
+
   body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:' "$decision_digest" "$routed_csv" "$decision")
   for dep in $routed; do
     body="${body}"$'\n'"- ${dep}"
@@ -438,9 +505,7 @@ command_resolve() {
     || fail "could not record the captain decision on $id"
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep disappeared before routing"
-    blocked=$(show_field "$show" blocked_by | tr -d '[:space:]')
-    blocked=${blocked#\"}
-    blocked=${blocked%\"}
+    blocked=$(blocked_edges "$show")
     case ",$blocked," in
       *",$id,"*)
         tasks_axi unblock "$dep" --by "$id" >/dev/null \

@@ -622,6 +622,172 @@ EOF
   pass "a detected ruling becomes durable dependent work before its hold closes"
 }
 
+make_ruling_home() {  # <name> <origin> <key> <answer>
+  local name=$1 origin=$2 key=$3 answer=$4 home hold
+  home=$(make_home "$name")
+  hold="$origin-decision-$key"
+  mkdir -p "$home/data/$origin" "$home/data/decisions"
+  tasks_in "$home" add "$origin" "Review the sample ruling route" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the $name origin"
+  write_origin_meta "$home" "$origin"
+  printf '# Sample ruling review\n\nThe captain must select the route.\n' \
+    > "$home/data/$origin/report.md"
+  run_decisions "$home" hold "$origin" "$key" \
+    --title "Choose the sample ruling route" \
+    --reason "captain sample route pending" --repo sample >/dev/null \
+    || fail "could not create the $name hold"
+  run_decisions "$home" complete "$origin" "$key" >/dev/null \
+    || fail "could not complete the $name inventory"
+  write_captain_reply "$home" "$hold" "$answer"
+  printf '%s\n' "$answer" > "$home/data/decisions/$hold.md"
+  printf '%s\n' "$home"
+}
+
+write_captain_reply() {  # <home> <hold> <answer>
+  cat > "$1/data/pending-decisions.md" <<EOF
+# Captain decisions
+
+## ✍️ Your replies
+
+$2: $3
+EOF
+}
+
+# Builds a runnable copy of bin/ whose fm-decision-hold.sh carries the smallest
+# falsifying edit: the named refusal becomes a no-op. The regression above must
+# fail against this mutant, which is what proves the refusal is load-bearing.
+falsified_decision_hold() {  # <home> <label> <sed-expression>
+  local home=$1 label=$2 expression=$3
+  local dir="$home/falsified-$label"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  ln -s "$ROOT"/bin/* "$dir/" || fail "could not stage the $label falsifying copy"
+  rm -f "$dir/fm-decision-hold.sh"
+  sed "$expression" "$ROOT/bin/fm-decision-hold.sh" > "$dir/fm-decision-hold.sh" \
+    || fail "could not apply the $label falsifying edit"
+  chmod +x "$dir/fm-decision-hold.sh"
+  ! cmp -s "$ROOT/bin/fm-decision-hold.sh" "$dir/fm-decision-hold.sh" \
+    || fail "the $label falsifying edit changed nothing, so it proves nothing"
+  printf '%s\n' "$dir/fm-decision-hold.sh"
+}
+
+run_falsified_decisions() {  # <home> <script> <command args...>
+  local home=$1 script=$2
+  shift 2
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" "$script" "$@"
+}
+
+test_resolve_refuses_an_undisclosed_blocked_dependent() {
+  local home origin=sample-undisclosed-review key=route hold record show falsified
+  hold="$origin-decision-$key"
+  home=$(make_ruling_home undisclosed-dependent "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-undisclosed-first "Apply the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the disclosed dependent"
+  tasks_in "$home" add sample-undisclosed-second "Check the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the undisclosed dependent"
+
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-undisclosed-first \
+    > "$home/undisclosed.out" 2> "$home/undisclosed.err"; then
+    fail "resolve closed a hold that still owned an undisclosed blocked dependent"
+  fi
+  assert_grep "sample-undisclosed-second is still blocked by $hold" "$home/undisclosed.err" \
+    "the refusal must name the undisclosed dependent"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the refused resolve closed the hold"
+  assert_contains "$show" "held: yes" "the refused resolve released the hold"
+  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "the refused resolve recorded a decision before its own gate passed"
+  show=$(tasks_in "$home" show sample-undisclosed-first --full)
+  assert_contains "$show" "blocked: yes" "the refused resolve cleared a dependency edge"
+
+  falsified=$(falsified_decision_hold "$home" routing \
+    's/fail "task \$dep is still blocked/: "task $dep is still blocked/')
+  run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to sample-undisclosed-first >/dev/null 2>&1 \
+    || fail "the falsifying edit did not reach the closure path it must expose"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" \
+    "the undisclosed-dependent regression still passes without its refusal"
+  show=$(tasks_in "$home" show sample-undisclosed-second --full)
+  assert_contains "$show" "blocked-by:$hold" \
+    "the falsified run must leave the undisclosed dependent pointing at a closed hold"
+
+  home=$(make_ruling_home disclosed-dependents "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-undisclosed-first "Apply the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the first disclosed dependent"
+  tasks_in "$home" add sample-undisclosed-second "Check the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the second disclosed dependent"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-undisclosed-first --routed-to sample-undisclosed-second >/dev/null \
+    || fail "resolve refused a fully routed dependent set"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "a fully routed dependent set did not close the hold"
+  pass "resolve discovers every still-blocked dependent and refuses an undisclosed one"
+}
+
+test_resolve_refuses_a_superseded_captain_ruling() {
+  local home origin=sample-superseded-review key=route hold record show falsified
+  hold="$origin-decision-$key"
+  home=$(make_ruling_home superseded-ruling "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-superseded-work "Apply the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the superseded-ruling dependent"
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-superseded-work \
+    > "$home/superseded.out" 2> "$home/superseded.err"; then
+    fail "resolve closed a hold on a captain reply the captain had already revised"
+  fi
+  assert_grep "newer captain reply" "$home/superseded.err" \
+    "the refusal must name the newer captain reply"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the superseded resolve closed the hold"
+  assert_contains "$show" "held: yes" "the superseded resolve released the hold"
+  assert_not_contains "$show" "Use the east route." \
+    "the superseded resolve recorded the stale captain text"
+  show=$(tasks_in "$home" show sample-superseded-work --full)
+  assert_contains "$show" "blocked: yes" "the superseded resolve cleared a dependency edge"
+
+  falsified=$(falsified_decision_hold "$home" freshness \
+    's/fail "captain hold \$id has a newer/: "captain hold $id has a newer/')
+  run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to sample-superseded-work >/dev/null 2>&1 \
+    || fail "the falsifying edit did not reach the closure path it must expose"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" \
+    "the superseded-ruling regression still passes without its refusal"
+  assert_contains "$show" "Use the east route." \
+    "the falsified run must close the hold on the superseded captain text"
+
+  home=$(make_ruling_home current-ruling "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-superseded-work "Apply the sample ruling route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the current-ruling dependent"
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+  printf 'Use the west route instead.\n' > "$record"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-superseded-work >/dev/null \
+    || fail "resolve refused a decision record that matches the current captain reply"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "a re-read current ruling did not close the hold"
+  assert_contains "$show" "Use the west route instead." \
+    "the closed hold did not retain the revised captain ruling"
+  pass "resolve re-reads the captain ruling and refuses a superseded decision record"
+}
+
 test_ruling_wake_loads_the_single_lifecycle_owner() {
   assert_grep 'on a `captain-ruling <hold-id>[,<hold-id>...]` `check:` wake' "$AGENTS" \
     "AGENTS.md does not load the decision owner for captain-ruling wakes"
@@ -651,4 +817,6 @@ test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
+test_resolve_refuses_an_undisclosed_blocked_dependent
+test_resolve_refuses_a_superseded_captain_ruling
 test_ruling_wake_loads_the_single_lifecycle_owner
