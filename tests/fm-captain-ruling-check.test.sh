@@ -338,9 +338,36 @@ EOF
   pass "answer reader returns the latest complete open ruling without changing captain input"
 }
 
+test_answer_ingestion_refuses_while_resolution_lock_is_held() {
+  local world home fakebin pending lock
+  world=$(make_home serialized-answer); home=${world%%|*}; fakebin=${world#*|}
+  pending="$home/data/pending-decisions.md"
+  cat > "$pending" <<'EOF'
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+review-decision-route: Use route north.
+<!-- END APPEND-ONLY: captain-replies -->
+EOF
+  export FM_HOME="$home"
+  export FM_STATE_OVERRIDE="$home/state"
+  # shellcheck source=bin/fm-wake-lib.sh disable=SC1091
+  . "$ROOT/bin/fm-wake-lib.sh"
+  lock="$home/state/.captain-ruling-resolution.lock"
+  fm_lock_try_acquire "$lock" || fail "could not hold the ruling-resolution lock fixture"
+  if read_answer "$home" "$fakebin" review-decision-route \
+    > "$home/locked.out" 2> "$home/locked.err"; then
+    fm_lock_release "$lock"
+    fail "answer ingestion bypassed an active ruling-resolution lock"
+  fi
+  fm_lock_release "$lock"
+  read_answer "$home" "$fakebin" review-decision-route >/dev/null \
+    || fail "answer ingestion did not resume after ruling resolution released its lock"
+  pass "reply ingestion serializes with active ruling resolution"
+}
+
 test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
 test_partial_reply_region_waits_for_completion
 test_detection_survives_heading_moves_and_renames
 test_captain_hold_on_task_kind_is_not_replyable
 test_answer_reads_latest_complete_open_ruling_without_mutation
+test_answer_ingestion_refuses_while_resolution_lock_is_held

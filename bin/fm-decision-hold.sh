@@ -44,6 +44,8 @@
 # `fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the
 # prepared decision record, so a ruling revised during the agent turn is never closed
 # on superseded text. That read only ever refuses; it never supplies decision text.
+# Reply ingestion and resolution share state/.captain-ruling-resolution.lock from the first freshness read through hold closure.
+# A revision check immediately after the initial body write rolls that write back and refuses if an actor bypassed the serialization contract at the write boundary.
 # The re-read is skipped only once the identical decision is already committed to the
 # hold body, because that retry finishes an existing close rather than deciding a new
 # one; a changed decision is still rejected by the retry identity record.
@@ -58,6 +60,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 RULING_CHECK="$SCRIPT_DIR/fm-captain-ruling-check.sh"
+RULING_LOCK="$STATE/.captain-ruling-resolution.lock"
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -65,6 +68,9 @@ RULING_CHECK="$SCRIPT_DIR/fm-captain-ruling-check.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 usage() {
   awk '
@@ -129,6 +135,15 @@ show_field() {  # <show-output> <field>
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
 }
 
+decoded_field() {  # <show-output> <field>
+  local raw
+  raw=$(show_field "$1" "$2")
+  case "$raw" in
+    \"*) printf '%s' "$raw" | jq -Rr fromjson ;;
+    *) printf '%s' "$raw" ;;
+  esac
+}
+
 blocked_edges() {  # <show-output>
   local blocked
   # tasks-axi quotes multi-entry blocked_by as "a,b,c"; strip so edge ids match.
@@ -167,9 +182,18 @@ EOF
 
 current_captain_answer() {  # <hold-id>
   [ -x "$RULING_CHECK" ] || return 1
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+  FM_CAPTAIN_RULING_LOCK_HELD=1 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
     FM_PENDING_DECISIONS_OVERRIDE="$DATA/pending-decisions.md" \
     "$RULING_CHECK" --answer "$1" 2>/dev/null
+}
+
+captain_answer_matches() {  # <hold-id> <decision>
+  local answer
+  answer=$(FM_CAPTAIN_RULING_LOCK_HELD=1 FM_HOME="$FM_HOME" \
+    FM_STATE_OVERRIDE="$STATE" \
+    FM_PENDING_DECISIONS_OVERRIDE="$DATA/pending-decisions.md" \
+    "$RULING_CHECK" --answer-locked "$1" 2>/dev/null) || return 1
+  [ -n "$answer" ] && [ "$answer" = "$2" ]
 }
 
 verify_decision_is_current() {  # <hold-id> <decision>
@@ -485,7 +509,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body dependents current_dependents resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body original_hold_body dependents current_dependents resolution_recorded=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -512,6 +536,12 @@ command_resolve() {
   id=$(hold_id "$origin" "$key")
   require_canonical_decision_file "$id" "$decision_file"
   require_session_lock_ownership
+  if [ "${FM_CAPTAIN_RULING_LOCK_HELD:-0}" != 1 ]; then
+    fm_lock_try_acquire "$RULING_LOCK" \
+      || fail "captain ruling ingestion is already active; resolve refused"
+    trap 'fm_lock_release "$RULING_LOCK"' EXIT
+    export FM_CAPTAIN_RULING_LOCK_HELD=1
+  fi
   decision_pointer="data/decisions/$id.md"
   if verify_hold_resolved "$id"; then
     hold_show=$(task_show "$id")
@@ -523,6 +553,7 @@ command_resolve() {
   verify_hold_active "$id"
   hold_show=$(task_show "$id")
   hold_body=$(show_field "$hold_show" body)
+  original_hold_body=$(decoded_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
       verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
@@ -571,6 +602,12 @@ command_resolve() {
   done
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on $id"
+  if [ "$resolution_recorded" != 1 ] \
+    && ! captain_answer_matches "$id" "$decision"; then
+    tasks_axi update "$id" --body "$original_hold_body" >/dev/null \
+      || fail "captain ruling changed during resolve and the uncommitted body could not be rolled back"
+    fail "captain hold $id has a newer captain reply than the prepared decision record"
+  fi
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep disappeared before routing"
     blocked=$(blocked_edges "$show")

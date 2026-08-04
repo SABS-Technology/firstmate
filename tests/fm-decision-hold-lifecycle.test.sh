@@ -1024,7 +1024,7 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   assert_contains "$show" "blocked: yes" "the superseded resolve cleared a dependency edge"
 
   falsified=$(falsified_decision_hold "$home" freshness \
-    's/fail "captain hold \$id has a newer/: "captain hold $id has a newer/')
+    's/fail "captain hold \$id has a newer/: "captain hold $id has a newer/; s/! captain_answer_matches "\$id" "\$decision"/! true/')
   run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
     --decision-file "$record" --routed-to sample-superseded-work >/dev/null 2>&1 \
     || fail "the falsifying edit did not reach the closure path it must expose"
@@ -1049,6 +1049,55 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   assert_contains "$show" "Use the west route instead." \
     "the closed hold did not retain the revised captain ruling"
   pass "resolve re-reads the captain ruling and refuses a superseded decision record"
+}
+
+test_resolve_cas_refuses_ruling_changed_at_body_update_boundary() {
+  local home origin=sample-cas-review key=route hold record show
+  hold="$origin-decision-$key"
+  home=$(make_ruling_home ruling-cas-boundary "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-cas-work "Apply the CAS-protected sample route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the CAS-boundary dependent"
+  cat > "$home/fakebin/tasks-axi" <<EOF
+#!/usr/bin/env bash
+set -eu
+if [ "\${1:-}" = update ] && [ "\${2:-}" = "$hold" ] \
+  && [ ! -f "$home/ruling-revised" ]; then
+  cat > "$home/data/pending-decisions.md" <<'REPLY'
+# Captain decisions
+
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+$hold: Use the west route instead.
+<!-- END APPEND-ONLY: captain-replies -->
+REPLY
+  : > "$home/ruling-revised"
+fi
+exec "\$REAL_TASKS_AXI" "\$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-cas-work > "$home/cas.out" 2> "$home/cas.err"; then
+    fail "resolve closed on ruling text superseded at the body-update boundary"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "CAS refusal closed the hold"
+  assert_contains "$show" "held: yes" "CAS refusal released the hold"
+  assert_not_contains "$show" "Use the east route." \
+    "CAS refusal left the superseded ruling committed"
+  show=$(tasks_in "$home" show sample-cas-work --full)
+  assert_contains "$show" "blocked: yes" "CAS refusal routed dependent work"
+
+  printf 'Use the west route instead.\n' > "$record"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-cas-work >/dev/null \
+    || fail "revised ruling could not commit after the CAS refusal"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "revised ruling did not close after CAS retry"
+  assert_contains "$show" "Use the west route instead." \
+    "CAS retry did not commit the revised ruling"
+  pass "ruling revision CAS prevents closure on text changed at the update boundary"
 }
 
 PARTIAL_HOME=''
@@ -1216,6 +1265,7 @@ test_resolve_enforces_session_lock_and_stable_dependent_set
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
+test_resolve_cas_refuses_ruling_changed_at_body_update_boundary
 test_exact_retry_finishes_routing_after_a_revised_reply
 test_partial_retry_still_refuses_a_different_decision
 test_ruling_wake_loads_the_single_lifecycle_owner

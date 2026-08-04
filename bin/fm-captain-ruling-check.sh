@@ -15,6 +15,7 @@
 # It never changes pending-decisions.md and never resolves a hold.
 # `--answer <id>` gives the handling agent the latest complete answer for one
 # still-open captain hold without exposing answer text in the watcher wake.
+# Reply detection and answer reads serialize with fm-decision-hold.sh resolve through the shared ruling-resolution lock.
 #
 # `--install` atomically publishes the home-bound mode-0700 shim and binds its
 # bytes through fm-check-register.sh.
@@ -36,11 +37,26 @@ REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
 REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
 REPLY_MARKER_TEXT='APPEND-ONLY: captain-replies'
 CAPTAIN_QUEUE="$SCRIPT_DIR/fm-captain-queue.sh"
+RULING_LOCK="$STATE/.captain-ruling-resolution.lock"
 
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-check-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-check-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+
+ruling_lock_acquire() {
+  [ "${FM_CAPTAIN_RULING_LOCK_HELD:-0}" = 1 ] && return 0
+  fm_lock_try_acquire "$RULING_LOCK" || return 1
+  RULING_LOCK_OWNED=1
+}
+
+ruling_lock_release() {
+  [ "${RULING_LOCK_OWNED:-0}" = 1 ] || return 0
+  fm_lock_release "$RULING_LOCK"
+  RULING_LOCK_OWNED=0
+}
 
 shim_content() {
   printf '%s\n' \
@@ -199,9 +215,44 @@ answer_for_hold() {
   printf '%s\n' "$answer"
 }
 
+answer_for_locked_resolution() {
+  local id=${1:-} candidate_id candidate_answer candidates answer=''
+  [ "${FM_CAPTAIN_RULING_LOCK_HELD:-0}" = 1 ] || return 1
+  [ "$#" -eq 1 ] || return 2
+  fm_pr_task_id_valid "$id" || return 2
+  [ -f "$PENDING" ] && [ ! -L "$PENDING" ] || return 1
+  candidates=$(reply_candidates)
+  while IFS=$'\t' read -r candidate_id candidate_answer; do
+    [ "$candidate_id" = "$id" ] || continue
+    answer=$candidate_answer
+  done <<< "$candidates"
+  [ -n "$answer" ] || return 1
+  printf '%s\n' "$answer"
+}
+
 case "${1:-}" in
-  '') detect_rulings ;;
+  '')
+    ruling_lock_acquire || exit 0
+    detect_rulings
+    status=$?
+    ruling_lock_release
+    exit "$status"
+    ;;
   --install) [ "$#" -eq 1 ] || exit 2; install_check ;;
-  --answer) shift; answer_for_hold "$@" ;;
+  --answer)
+    shift
+    ruling_lock_acquire || {
+      printf 'fm-captain-ruling-check: ruling resolution is active\n' >&2
+      exit 1
+    }
+    answer_for_hold "$@"
+    status=$?
+    ruling_lock_release
+    exit "$status"
+    ;;
+  --answer-locked)
+    shift
+    answer_for_locked_resolution "$@"
+    ;;
   *) exit 2 ;;
 esac
