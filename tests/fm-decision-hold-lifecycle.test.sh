@@ -1044,22 +1044,14 @@ test_every_mutation_interruption_refuses_a_superseded_commit() {
     tasks_in "$home" add "$dep" "Apply the interruption ruling" --kind ship --repo sample \
       --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
   done
-  cat > "$home/fakebin/tasks-axi" <<'EOF'
-#!/usr/bin/env bash
-case "${1:-}" in
-  update) [ "${2:-}" = --help ] || printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
-  unblock|done) printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
-esac
-exec "$REAL_TASKS_AXI" "$@"
-EOF
-  chmod +x "$home/fakebin/tasks-axi"
+  install_tasks_axi_call_probe "$home" discover
   run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
     --routed-to sample-interruption-first --routed-to sample-interruption-second >/dev/null
   mutation_count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
   mutation_sequence=$(tr '\n' ';' < "$home/mutations")
   [ "$mutation_count" -ge 4 ] || fail "mutation discovery found only $mutation_count positions"
 
-  position=0
+  position=1
   while [ "$position" -le "$mutation_count" ]; do
     home=$(make_ruling_home "interruption-$position" "$origin" "$key" 'Use the east route.')
     record="$home/data/decisions/$hold.md"
@@ -1068,26 +1060,7 @@ EOF
         --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
     done
     printf '0\n' > "$home/mutation-count"
-    cat > "$home/fakebin/tasks-axi" <<'EOF'
-#!/usr/bin/env bash
-mutation=0
-case "${1:-}" in
-  update) [ "${2:-}" = --help ] || mutation=1 ;;
-  unblock|done) mutation=1 ;;
-esac
-if [ "$mutation" -eq 1 ]; then
-    count=$(cat "$FM_HOME/mutation-count")
-    next=$((count + 1))
-    printf '%s\n' "$next" > "$FM_HOME/mutation-count"
-    if [ "$FM_MUTATION_FAIL_AT" -eq 0 ] && [ "$next" -eq 1 ]; then exit 1; fi
-    if [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
-      "$REAL_TASKS_AXI" "$@" || exit
-      exit 1
-    fi
-fi
-exec "$REAL_TASKS_AXI" "$@"
-EOF
-    chmod +x "$home/fakebin/tasks-axi"
+    install_tasks_axi_call_probe "$home" interrupt
     if FM_MUTATION_FAIL_AT="$position" run_decisions "$home" resolve "$origin" "$key" \
       --decision-file "$record" --routed-to sample-interruption-first \
       --routed-to sample-interruption-second >/dev/null 2>&1; then
@@ -1114,15 +1087,11 @@ EOF
     tasks_in "$home" add "$dep" "Apply the interruption ruling" --kind ship --repo sample \
       --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
   done
-  cat > "$home/fakebin/tasks-axi" <<'EOF'
-#!/usr/bin/env bash
-case "${1:-}" in update) [ "${2:-}" = --help ] || exit 1 ;; unblock|done) exit 1 ;; esac
-exec "$REAL_TASKS_AXI" "$@"
-EOF
-  chmod +x "$home/fakebin/tasks-axi"
-  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+  printf '0\n' > "$home/mutation-count"
+  install_tasks_axi_call_probe "$home" interrupt
+  FM_MUTATION_FAIL_AT=1 run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
     --routed-to sample-interruption-first --routed-to sample-interruption-second >/dev/null 2>&1 \
-    && fail "mutant setup did not interrupt before the first mutation"
+    && fail "mutant setup did not interrupt at the first mutation"
   write_captain_reply "$home" "$hold" 'Use the west route instead.'
   mutant=$(falsified_ruling_commit "$home" dedicated-cas-bypass)
   rm "$home/fakebin/tasks-axi"
@@ -1158,46 +1127,19 @@ test_every_embedded_mutation_interruption_refuses_a_superseded_commit() {
   setup_embedded_ruling_home embedded-interruption-discovery "$id" 'Use the east route.'
   home=$EMBEDDED_HOME
   record="$home/data/decisions/$id.md"
-  cat > "$home/fakebin/tasks-axi" <<'EOF'
-#!/usr/bin/env bash
-case "${1:-}" in
-  update) [ "${2:-}" = --help ] || printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
-  unhold) printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
-esac
-exec "$REAL_TASKS_AXI" "$@"
-EOF
-  chmod +x "$home/fakebin/tasks-axi"
+  install_tasks_axi_call_probe "$home" discover
   run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null
   mutation_count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
   mutation_sequence=$(tr '\n' ';' < "$home/mutations")
   [ "$mutation_count" -ge 2 ] || fail "embedded mutation discovery found only $mutation_count positions"
 
-  position=0
+  position=1
   while [ "$position" -le "$mutation_count" ]; do
     setup_embedded_ruling_home "embedded-interruption-$position" "$id" 'Use the east route.'
     home=$EMBEDDED_HOME
     record="$home/data/decisions/$id.md"
     printf '0\n' > "$home/mutation-count"
-    cat > "$home/fakebin/tasks-axi" <<'EOF'
-#!/usr/bin/env bash
-mutation=0
-case "${1:-}" in
-  update) [ "${2:-}" = --help ] || mutation=1 ;;
-  unhold) mutation=1 ;;
-esac
-if [ "$mutation" -eq 1 ]; then
-    count=$(cat "$FM_HOME/mutation-count")
-    next=$((count + 1))
-    printf '%s\n' "$next" > "$FM_HOME/mutation-count"
-    if [ "$FM_MUTATION_FAIL_AT" -eq 0 ] && [ "$next" -eq 1 ]; then exit 1; fi
-    if [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
-      "$REAL_TASKS_AXI" "$@" || exit
-      exit 1
-    fi
-fi
-exec "$REAL_TASKS_AXI" "$@"
-EOF
-    chmod +x "$home/fakebin/tasks-axi"
+    install_tasks_axi_call_probe "$home" interrupt
     if FM_MUTATION_FAIL_AT="$position" run_decisions "$home" resolve-item "$id" \
       --decision-file "$record" >/dev/null 2>&1; then
       fail "embedded interruption position $position completed instead of failing; sequence=$mutation_sequence"
@@ -1219,14 +1161,10 @@ EOF
   setup_embedded_ruling_home embedded-interruption-mutant "$id" 'Use the east route.'
   home=$EMBEDDED_HOME
   record="$home/data/decisions/$id.md"
-  cat > "$home/fakebin/tasks-axi" <<'EOF'
-#!/usr/bin/env bash
-case "${1:-}" in update) [ "${2:-}" = --help ] || exit 1 ;; unhold) exit 1 ;; esac
-exec "$REAL_TASKS_AXI" "$@"
-EOF
-  chmod +x "$home/fakebin/tasks-axi"
-  run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null 2>&1 \
-    && fail "embedded mutant setup did not interrupt before the first mutation"
+  printf '0\n' > "$home/mutation-count"
+  install_tasks_axi_call_probe "$home" interrupt
+  FM_MUTATION_FAIL_AT=1 run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null 2>&1 \
+    && fail "embedded mutant setup did not interrupt at the first mutation"
   write_captain_reply "$home" "$id" 'Use the west route instead.'
   mutant=$(falsified_ruling_commit "$home" embedded-cas-bypass)
   rm "$home/fakebin/tasks-axi"
@@ -1251,6 +1189,66 @@ write_pending_skeleton() {  # <home>
 <!-- BEGIN GENERATED: captain-queue -->
 <!-- END GENERATED: captain-queue -->
 EOF
+}
+
+install_tasks_axi_call_probe() {  # <home> <discover|interrupt>
+  local home=$1 mode=$2
+  case "$mode" in
+    discover)
+      cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+before=$(shasum -a 256 "$FM_HOME/data/backlog.md")
+"$REAL_TASKS_AXI" "$@"
+rc=$?
+after=$(shasum -a 256 "$FM_HOME/data/backlog.md")
+if [ "$before" != "$after" ]; then
+  printf '%s %s\n' "$1" "${2:-}" >> "$FM_HOME/mutations"
+fi
+exit "$rc"
+EOF
+      ;;
+    interrupt)
+      cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+before=$(shasum -a 256 "$FM_HOME/data/backlog.md")
+"$REAL_TASKS_AXI" "$@"
+rc=$?
+after=$(shasum -a 256 "$FM_HOME/data/backlog.md")
+if [ "$before" != "$after" ]; then
+  count=$(cat "$FM_HOME/mutation-count")
+  next=$((count + 1))
+  printf '%s\n' "$next" > "$FM_HOME/mutation-count"
+  if [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
+    exit 1
+  fi
+fi
+exit "$rc"
+EOF
+      ;;
+    *) fail "unknown tasks-axi call probe mode: $mode" ;;
+  esac
+  chmod +x "$home/fakebin/tasks-axi"
+}
+
+test_mutation_probe_is_verb_agnostic() {
+  local home count
+  home=$(make_home verb-agnostic-mutation-probe)
+  tasks_in "$home" add sample-probe-work "Exercise mutation discovery" \
+    --kind ship --repo sample >/dev/null
+  install_tasks_axi_call_probe "$home" discover
+
+  (cd "$home" && PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" \
+    tasks-axi update sample-probe-work --body 'existing mutation verb' >/dev/null)
+  count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
+  [ "$count" -eq 1 ] \
+    || fail "an extra existing tasks-axi verb did not increase mutation discovery"
+
+  (cd "$home" && PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" \
+    tasks-axi hold sample-probe-work --reason 'new mutation verb' --kind captain >/dev/null)
+  count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
+  [ "$count" -eq 2 ] \
+    || fail "a previously unlisted tasks-axi mutation verb did not increase mutation discovery"
+  pass "mutation discovery is conservative and verb-agnostic"
 }
 
 answer_generated_prefix() {  # <pending> <id> <answer>
@@ -1470,6 +1468,7 @@ test_resolve_enforces_session_lock_and_stable_dependent_set
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
+test_mutation_probe_is_verb_agnostic
 test_every_mutation_interruption_refuses_a_superseded_commit
 test_every_embedded_mutation_interruption_refuses_a_superseded_commit
 test_in_flight_captain_hold_resolves_end_to_end
