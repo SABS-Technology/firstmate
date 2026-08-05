@@ -37,6 +37,8 @@ EVENTS="$STATE/stage-transitions.tsv"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-append-log-lib.sh
+. "$SCRIPT_DIR/fm-append-log-lib.sh"
 
 usage() {
   awk '
@@ -105,23 +107,7 @@ fm_stage_emit() {
   fm_stage_timestamp_valid "$at" || return 1
   printf -v record '%s\t%s\t%s\n' "$task" "$stage" "$at"
 
-  if ! command -v perl >/dev/null 2>&1 || ! perl -MFcntl=:DEFAULT,:flock -e '
-    my ($path, $device, $record) = @ARGV;
-    exit 1 unless $device =~ /\A[0-9]+\z/ && length($record) <= 4096;
-    sysopen(my $file, $path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600)
-      or exit 1;
-    my @stat = stat($file);
-    exit 1 unless @stat && -f _ && $stat[0] == $device && $stat[3] == 1;
-    chmod(0600, $file) or exit 1;
-    flock($file, LOCK_EX) or exit 1;
-    my $offset = 0;
-    while ($offset < length($record)) {
-      my $written = syswrite($file, $record, length($record) - $offset, $offset);
-      exit 1 unless defined($written) && $written > 0;
-      $offset += $written;
-    }
-    close($file) or exit 1;
-  ' "$EVENTS" "$state_device" "$record" 2>/dev/null; then
+  if ! fm_append_log_record "$EVENTS" "$state_device" "$record" stage; then
     echo "error: stage transition record is unavailable" >&2
     return 1
   fi

@@ -93,6 +93,22 @@ test_invalid_event_is_rejected_without_mutation() {
   pass "invalid stages fail closed without changing the append-only record"
 }
 
+test_corrupt_ledger_refuses_without_mutation() {
+  local state ledger before rc
+  state=$(make_state corrupt-ledger)
+  ledger="$state/stage-transitions.tsv"
+  printf 'malformed-existing-row\n' > "$ledger"
+  chmod 0600 "$ledger"
+  before=$(cat "$ledger")
+  set +e
+  run_stage "$state" emit task-c merged >/dev/null 2>&1
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "emission against a corrupt ledger must refuse"
+  [ "$(cat "$ledger")" = "$before" ] || fail "corrupt-ledger refusal changed the ledger"
+  pass "stage emission refuses an already-corrupt ledger without changing its bytes"
+}
+
 test_axes_round_trip_independently() {
   local state paused_status working_status
   state=$(make_state independent-axes)
@@ -156,6 +172,7 @@ test_model_matches_lifecycle
 test_append_only_restart_round_trip
 test_duplicate_and_backward_events_are_preserved
 test_invalid_event_is_rejected_without_mutation
+test_corrupt_ledger_refuses_without_mutation
 test_axes_round_trip_independently
 test_supervision_meanings_are_unchanged
 

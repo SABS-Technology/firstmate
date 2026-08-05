@@ -680,6 +680,15 @@ families_for_changed_path() {
       # lane's contract coverage re-runs.
       printf '%s\n' real-herdr-gated
       ;;
+    bin/fm-append-log-lib.sh)
+      printf '%s\n' __script__:fm-stage.test.sh
+      printf '%s\n' __script__:fm-decision-hold-lifecycle.test.sh
+      printf '%s\n' __script__:fm-captain-ruling-check.test.sh
+      ;;
+    bin/fm-captain-ruling-log-lib.sh)
+      printf '%s\n' __script__:fm-decision-hold-lifecycle.test.sh
+      printf '%s\n' __script__:fm-captain-ruling-check.test.sh
+      ;;
     bin/fm-lint.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
     bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\

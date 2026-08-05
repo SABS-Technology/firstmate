@@ -97,15 +97,18 @@ init_changed_fixture_repo() {
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
+    fm-captain-ruling-check.test.sh \
     fm-captain-translation-contract.test.sh \
     fm-cd-pretool-check.test.sh \
     fm-daemon.test.sh \
+    fm-decision-hold-lifecycle.test.sh \
     fm-backend-herdr-smoke.test.sh \
     fm-secondmate-safety.test.sh \
     fm-session-start.test.sh \
     fm-afk-pi-herdr-return-e2e.test.sh \
     fm-backend.test.sh \
     fm-pr-merge.test.sh \
+    fm-stage.test.sh \
     fm-pi-watch-extension.test.sh \
     fm-afk-return.test.sh \
     fm-bearings-snapshot.test.sh \
@@ -117,6 +120,8 @@ init_changed_fixture_repo() {
   done
   : >"$repo/tests/lib.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
+  : >"$repo/bin/fm-append-log-lib.sh"
+  : >"$repo/bin/fm-captain-ruling-log-lib.sh"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
   printf '# .agents/skills/example/SKILL.md\n' >>"$repo/tests/fm-captain-translation-contract.test.sh"
@@ -161,6 +166,25 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-afk-return.test.sh" "supervisor target selects afk coverage"
   git -C "$repo" add bin/fm-supervisor-target-lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm supervisor-change
+
+  printf '\n' >>"$repo/bin/fm-append-log-lib.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-stage.test.sh" "append writer selects stage coverage"
+  assert_contains "$listed" "tests/fm-decision-hold-lifecycle.test.sh" \
+    "append writer selects decision resolution coverage"
+  assert_contains "$listed" "tests/fm-captain-ruling-check.test.sh" \
+    "append writer selects ruling ingestion coverage"
+  git -C "$repo" add bin/fm-append-log-lib.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm append-log-change
+
+  printf '\n' >>"$repo/bin/fm-captain-ruling-log-lib.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-decision-hold-lifecycle.test.sh" \
+    "ruling log selects decision resolution coverage"
+  assert_contains "$listed" "tests/fm-captain-ruling-check.test.sh" \
+    "ruling log selects ruling ingestion coverage"
+  git -C "$repo" add bin/fm-captain-ruling-log-lib.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm ruling-log-change
 
   printf '\n' >>"$repo/.agents/skills/example/SKILL.md"
   printf '\n' >>"$repo/.claude/settings.json"

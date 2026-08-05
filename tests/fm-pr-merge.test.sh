@@ -146,6 +146,30 @@ test_merge_failure_propagates_after_recording() {
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
+test_corrupt_stage_ledger_refuses_before_forge_merge() {
+  local case_dir rc before
+  case_dir=$(make_case corrupt-stage-ledger)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+  printf 'malformed-existing-row\n' > "$case_dir/state/stage-transitions.tsv"
+  chmod 0600 "$case_dir/state/stage-transitions.tsv"
+  before=$(cat "$case_dir/state/stage-transitions.tsv")
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/14 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "corrupt stage ledger must stop the guarded merge path"
+  [ "$(cat "$case_dir/state/stage-transitions.tsv")" = "$before" ] \
+    || fail "guarded merge changed the corrupt stage ledger"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "guarded merge called the forge after stage-ledger refusal"
+  pass "a corrupt stage ledger refuses before any forge merge call"
+}
+
 test_extra_merge_args_forwarded() {
   local case_dir rc
   case_dir=$(make_case extra-args)
@@ -308,6 +332,7 @@ test_parses_pr_url_for_gh_axi() {
 
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
+test_corrupt_stage_ledger_refuses_before_forge_merge
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge
