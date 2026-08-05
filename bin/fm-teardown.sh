@@ -109,7 +109,7 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
-if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
+if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1" || [ "$1" = captain-ruling ]; then
   echo "error: invalid teardown request" >&2
   exit 2
 fi

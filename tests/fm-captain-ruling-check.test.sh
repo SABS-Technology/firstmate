@@ -200,6 +200,37 @@ test_global_install_is_registered() {
   pass "one private single-link global check is registered"
 }
 
+test_global_check_identity_is_reserved() {
+  local world home fakebin before_check before_trust rc
+  world=$(make_home reserved-id); home=${world%%|*}; fakebin=${world#*|}
+  FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "$CHECK" --install || fail "global check installation failed for reservation test"
+  before_check=$(shasum -a 256 "$home/state/captain-ruling.check.sh")
+  before_trust=$(shasum -a 256 "$home/state/captain-ruling.check-trust")
+  # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+  . "$ROOT/bin/fm-pr-lib.sh"
+  ! fm_task_id_creation_valid captain-ruling \
+    || fail "global check identity remained valid for task creation"
+  fm_write_meta "$home/state/captain-ruling.meta" \
+    window=fm-captain-ruling worktree=/absent project=/absent kind=ship mode=no-mistakes
+  set +e
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-pr-check.sh" captain-ruling https://github.com/example/repo/pull/1 >/dev/null 2>&1
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "PR registration must refuse the reserved global-check identity"
+  set +e
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-teardown.sh" captain-ruling --force >/dev/null 2>&1
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "teardown must refuse the reserved global-check identity"
+  [ "$(shasum -a 256 "$home/state/captain-ruling.check.sh")" = "$before_check" ] \
+    && [ "$(shasum -a 256 "$home/state/captain-ruling.check-trust")" = "$before_trust" ] \
+    || fail "a task lifecycle command changed the global ruling detector"
+  pass "the global ruling detector identity is reserved before task check mutation"
+}
+
 test_detection_dedupe_malformed_and_immutability() {
   local world home fakebin pending out before after started elapsed
   world=$(make_home detection); home=${world%%|*}; fakebin=${world#*|}
@@ -433,6 +464,7 @@ test_file_ruling_channel_declares_accepted_untrusted_boundary() {
 }
 
 test_global_install_is_registered
+test_global_check_identity_is_reserved
 test_detection_dedupe_malformed_and_immutability
 test_detection_retries_until_durable_wake_is_acknowledged
 test_partial_reply_region_waits_for_completion

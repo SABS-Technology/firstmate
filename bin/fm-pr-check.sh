@@ -24,7 +24,8 @@ if [ "$#" -ne 2 ]; then
 fi
 ID=$1
 RAW_URL=$2
-if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
+if ! fm_pr_task_id_valid "$ID" || [ "$ID" = captain-ruling ] \
+  || ! fm_pr_url_parse "$RAW_URL"; then
   echo "error: invalid PR check request" >&2
   exit 2
 fi
