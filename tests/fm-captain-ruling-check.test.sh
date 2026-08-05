@@ -26,8 +26,20 @@ write_tasks_axi() {
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
+queue_settled() {
+  local count=0
+  [ "${FM_FAKE_QUEUE_SETTLES_AFTER_FIRST:-0}" = 1 ] || return 1
+  [ -n "${FM_FAKE_QUEUE_CALLS:-}" ] || return 1
+  [ -f "$FM_FAKE_QUEUE_CALLS" ] && count=$(cat "$FM_FAKE_QUEUE_CALLS")
+  [ "$count" -ge 2 ]
+}
 case "$*" in
   'ready --include-held')
+    if [ -n "${FM_FAKE_QUEUE_CALLS:-}" ]; then
+      count=0
+      [ -f "$FM_FAKE_QUEUE_CALLS" ] && count=$(cat "$FM_FAKE_QUEUE_CALLS")
+      printf '%s\n' "$((count + 1))" > "$FM_FAKE_QUEUE_CALLS"
+    fi
     cat <<'OUT'
 ready[0]{}
 held[3]{id,title}
@@ -61,12 +73,18 @@ esac
 case "${2:-}" in
   review-decision-route|review-decision-access)
     key=${2##*-decision-}
+    state=queued
+    held=yes
+    if [ "${2:-}" = "${FM_FAKE_SETTLE_ID:-}" ] && queue_settled; then
+      state=done
+      held=no
+    fi
     cat <<OUT
 task:
   id: ${2:-}
   title: Review decision
-  state: queued
-  held: yes
+  state: $state
+  held: $held
   kind: captain
   hold_kind: captain
   hold_reason: captain reply pending
@@ -382,7 +400,7 @@ SH
   long_id=$(awk 'BEGIN { for (i = 0; i < 4022; i++) printf "a" }')
   for shape in truncated partial-final-field no-final-newline invalid-utf8 unknown-record \
     directory fifo mode-0644 mode-000 permission-error zero-byte nul-only embedded-nul crlf utf8-bom extra-blank-line \
-    orphan-commit duplicate-reply duplicate-commit same-reply-after-commit mismatched-commit unknown-hold exactly-4096; do
+    exactly-4096; do
     rm -rf "$log"
     reader_refuse=0
     case "$shape" in
@@ -437,24 +455,6 @@ SH
       extra-blank-line)
         printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n\n' > "$log"
         ;;
-      orphan-commit)
-        printf 'COMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' > "$log"
-        ;;
-      duplicate-reply)
-        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\nREPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
-        ;;
-      duplicate-commit)
-        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\nCOMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nCOMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' > "$log"
-        ;;
-      same-reply-after-commit)
-        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\nCOMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nREPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
-        ;;
-      mismatched-commit)
-        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\nCOMMIT\treview-decision-route\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' > "$log"
-        ;;
-      unknown-hold)
-        printf 'REPLY\tunknown-decision-hold\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
-        ;;
       exactly-4096)
         printf 'REPLY\t%s\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' "$long_id" > "$log"
         [ "$(wc -c < "$log" | tr -d ' ')" -eq 4096 ] || fail "exact record-boundary fixture is not 4096 bytes"
@@ -496,31 +496,6 @@ EOF
   pass "byte, encoding, size, type, and read failures wake durably; absence repair restores normal detection"
 }
 
-test_writer_producible_interleaving_and_revisions_remain_valid() {
-  local world home fakebin pending log before after out route_old route_new access
-  world=$(make_home valid-history); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/captain-replies.md"
-  log="$home/state/captain-ruling-log.tsv"
-  cat > "$pending" <<'EOF'
-<!-- BEGIN APPEND-ONLY: captain-replies -->
-review-decision-route: Use route south instead.
-review-decision-access: Restrict access.
-<!-- END APPEND-ONLY: captain-replies -->
-EOF
-  route_old=$(printf '%s' 'Use route north.' | shasum -a 256 | awk '{print $1}')
-  route_new=$(printf '%s' 'Use route south instead.' | shasum -a 256 | awk '{print $1}')
-  access=$(printf '%s' 'Restrict access.' | shasum -a 256 | awk '{print $1}')
-  printf 'REPLY\treview-decision-route\t%s\t-\nREPLY\treview-decision-access\t%s\t-\nCOMMIT\treview-decision-route\t%s\tdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\nCOMMIT\treview-decision-access\t%s\teeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\nREPLY\treview-decision-route\t%s\t-\nCOMMIT\treview-decision-route\t%s\tffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n' \
-    "$route_old" "$access" "$route_old" "$access" "$route_new" "$route_new" > "$log"
-  chmod 0600 "$log"
-  before=$(shasum -a 256 "$log" | awk '{print $1}')
-  out=$(run_check "$home" "$fakebin") || fail "writer-producible interleaved history was rejected"
-  [ -z "$out" ] || fail "committed interleaved history emitted an unexpected wake: $out"
-  after=$(shasum -a 256 "$log" | awk '{print $1}')
-  [ "$after" = "$before" ] || fail "unchanged valid history was not byte-stable"
-  pass "interleaved holds and legitimate reply revisions remain writer-producible"
-}
-
 stage_ruling_validator() {  # <destination> <mutation>
   local destination=$1 mutation=$2
   awk -v mutation="$mutation" '
@@ -537,14 +512,6 @@ stage_ruling_validator() {  # <destination> <mutation>
         sub(/ && \$stat\[3\] == 1/, "", line); changed_here = 1
       } else if (mutation == "record-boundary" && line ~ /length\(\$line\) >= 4096/) {
         sub(/length\(\$line\) >= 4096/, "length($line) > 4096", line); changed_here = 1
-      } else if (mutation == "known-hold" && line ~ /return 0 unless \$known\{\$id\}/) {
-        changed_here = 1; line = ""
-      } else if (mutation == "reply-dedup" && line ~ /return 0 if exists \$latest_reply/) {
-        changed_here = 1; line = ""
-      } else if (mutation == "commit-predecessor" && line ~ /return 0 unless \(\$last_type/) {
-        changed_here = 1; line = ""
-      } else if (mutation == "commit-digest" && line ~ /return 0 unless \(\$latest_reply/) {
-        changed_here = 1; line = ""
       }
       changed += changed_here
       if (line != "") print line
@@ -566,14 +533,13 @@ stage_ruling_validator() {  # <destination> <mutation>
 }
 
 run_ruling_validator_case() {  # <validator> <case>
-  local validator=$1 name=$2 dir state log known extra link long_id
+  local validator=$1 name=$2 dir state log extra link long_id
   dir="$TMP_ROOT/mutant-$name-$(basename "$validator")"
   state="$dir/state"
   log="$state/captain-ruling-log.tsv"
   rm -rf "$dir"
   mkdir -p "$state"
   chmod 0700 "$state"
-  known=review-decision-route
   extra=
   link=
   case "$name" in
@@ -594,20 +560,7 @@ run_ruling_validator_case() {  # <validator> <case>
       ;;
     record-boundary)
       long_id=$(awk 'BEGIN { for (i = 0; i < 4022; i++) printf "a" }')
-      known=$long_id
       printf 'REPLY\t%s\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' "$long_id" > "$log"
-      ;;
-    known-hold)
-      printf 'REPLY\tunknown-decision-hold\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
-      ;;
-    reply-dedup)
-      printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\nREPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
-      ;;
-    commit-predecessor)
-      printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\nCOMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nCOMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' > "$log"
-      ;;
-    commit-digest)
-      printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\nCOMMIT\treview-decision-route\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' > "$log"
       ;;
   esac
   chmod 0600 "$log"
@@ -624,20 +577,17 @@ run_ruling_validator_case() {  # <validator> <case>
     export FM_TEST_RULING_APPEND_PATH FM_TEST_RULING_LINK_PATH
     # shellcheck disable=SC1090
     . "$validator"
-    FM_RULING_KNOWN_IDS_READY=1
-    FM_RULING_KNOWN_IDS=$known
     fm_ruling_log_valid
   )
 }
 
-test_validator_predicates_and_history_guards_are_load_bearing() {
+test_validator_storage_predicates_are_load_bearing() {
   local dir base mutation mutant
   dir="$TMP_ROOT/validator-mutants"
   mkdir -p "$dir"
   base="$dir/unmodified.sh"
   stage_ruling_validator "$base" none
-  for mutation in size-positive total-size residual-buffer descriptor-link record-boundary \
-    known-hold reply-dedup commit-predecessor commit-digest; do
+  for mutation in size-positive total-size residual-buffer descriptor-link record-boundary; do
     if run_ruling_validator_case "$base" "$mutation"; then
       fail "unmodified validator accepted the negative $mutation case"
     fi
@@ -646,7 +596,119 @@ test_validator_predicates_and_history_guards_are_load_bearing() {
     run_ruling_validator_case "$mutant" "$mutation" \
       || fail "$mutation mutant did not fail the intended refusal assertion"
   done
-  pass "all storage, boundary, identity, and per-hold history guards kill their isolated mutants"
+  pass "all storage and record-boundary guards kill their isolated mutants"
+}
+
+write_committed_open_fixture() {  # <home>
+  local home=$1 digest log
+  digest=$(printf '%s' 'Use route north.' | shasum -a 256 | awk '{print $1}')
+  log="$home/state/captain-ruling-log.tsv"
+  cat > "$home/data/captain-replies.md" <<'EOF'
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+review-decision-route: Use route north.
+<!-- END APPEND-ONLY: captain-replies -->
+EOF
+  printf 'REPLY\treview-decision-route\t%s\t-\nCOMMIT\treview-decision-route\t%s\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' \
+    "$digest" "$digest" > "$log"
+  chmod 0600 "$log"
+}
+
+install_ruling_watcher_check() {  # <home> <fakebin>
+  local home=$1 fakebin=$2
+  printf '%s\n' fm-pr-check-migration-scan-v1 > "$home/state/.pr-check-migration-scan-v1"
+  printf '%s\n' fm-pr-check-migration-v1 > "$home/state/.pr-check-migration-v1"
+  chmod 0600 "$home/state/.pr-check-migration-scan-v1" "$home/state/.pr-check-migration-v1"
+  FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "$CHECK" --install || fail "could not install the ruling check"
+}
+
+test_persistent_queue_log_disagreement_wakes_once_without_mutation() {
+  local world home fakebin pending log before_pending before_log after_pending after_log out second
+  world=$(make_home persistent-disagreement); home=${world%%|*}; fakebin=${world#*|}
+  pending="$home/data/captain-replies.md"
+  log="$home/state/captain-ruling-log.tsv"
+  write_committed_open_fixture "$home"
+  install_ruling_watcher_check "$home" "$fakebin"
+  before_pending=$(shasum -a 256 "$pending" | awk '{print $1}')
+  before_log=$(shasum -a 256 "$log" | awk '{print $1}')
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 \
+    FM_POLL=0 FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=5 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=999999 \
+    perl -e 'alarm shift; exec @ARGV' 10 "$WATCH" > "$home/watch.out" 2> "$home/watch.err" \
+    || fail "watcher failed while surfacing a persistent queue/log disagreement"
+  out=$(cat "$home/watch.out")
+  assert_contains "$out" 'captain-ruling-error queue-log-disagreement review-decision-route' \
+    "watcher omitted the privacy-safe disagreement reason"
+  [ "$(grep -Fc 'captain-ruling-error queue-log-disagreement review-decision-route' "$home/state/.wake-queue")" -eq 1 ] \
+    || fail "persistent disagreement did not produce exactly one durable wake"
+  after_pending=$(shasum -a 256 "$pending" | awk '{print $1}')
+  after_log=$(shasum -a 256 "$log" | awk '{print $1}')
+  [ "$after_pending" = "$before_pending" ] && [ "$after_log" = "$before_log" ] \
+    || fail "disagreement detection mutated the captain reply or resolver log"
+  second=$(FM_HOME="$home" FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" "$CHECK") \
+    || fail "post-acknowledgment disagreement check failed"
+  [ -z "$second" ] || fail "acknowledged disagreement woke more than once: $second"
+  pass "a persistent open-versus-COMMIT disagreement wakes once durably without input mutation"
+}
+
+test_roll_forward_window_rechecks_before_waking() {
+  local world home fakebin calls out before after
+  world=$(make_home roll-forward-window); home=${world%%|*}; fakebin=${world#*|}
+  calls="$home/queue-calls"
+  write_committed_open_fixture "$home"
+  before=$(shasum -a 256 "$home/state/captain-ruling-log.tsv" | awk '{print $1}')
+  out=$(FM_HOME="$home" FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 \
+    FM_FAKE_QUEUE_CALLS="$calls" FM_FAKE_QUEUE_SETTLES_AFTER_FIRST=1 \
+    FM_FAKE_SETTLE_ID=review-decision-route \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" "$CHECK") \
+    || fail "roll-forward disagreement recheck failed"
+  [ -z "$out" ] || fail "a hold that closed during the recheck window emitted a false wake: $out"
+  [ "$(cat "$calls")" -eq 2 ] || fail "roll-forward fixture did not perform two queue observations"
+  after=$(shasum -a 256 "$home/state/captain-ruling-log.tsv" | awk '{print $1}')
+  [ "$after" = "$before" ] || fail "roll-forward recheck mutated the resolver log"
+  pass "a COMMIT-to-close roll-forward window stays silent after the later queue check agrees"
+}
+
+test_settled_queue_and_commit_log_stay_silent() {
+  local world home fakebin calls out
+  world=$(make_home settled-agreement); home=${world%%|*}; fakebin=${world#*|}
+  calls="$home/queue-calls"
+  printf '%s\n' 1 > "$calls"
+  write_committed_open_fixture "$home"
+  out=$(FM_HOME="$home" FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 \
+    FM_FAKE_QUEUE_CALLS="$calls" FM_FAKE_QUEUE_SETTLES_AFTER_FIRST=1 \
+    FM_FAKE_SETTLE_ID=review-decision-route \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" "$CHECK") \
+    || fail "settled queue/log agreement check failed"
+  [ -z "$out" ] || fail "settled queue and COMMIT log emitted an unexpected wake: $out"
+  pass "a settled queue and COMMIT log remain silent"
+}
+
+test_disagreement_surface_mutant_is_killed() {
+  local world home fakebin mutant_bin source name mutant out
+  world=$(make_home disagreement-mutant); home=${world%%|*}; fakebin=${world#*|}
+  write_committed_open_fixture "$home"
+  mutant_bin="$home/mutant-bin"
+  mkdir -p "$mutant_bin"
+  for source in "$ROOT"/bin/fm-*.sh; do
+    name=${source##*/}
+    ln -s "$source" "$mutant_bin/$name"
+  done
+  rm -f "$mutant_bin/fm-captain-ruling-check.sh"
+  mutant="$mutant_bin/fm-captain-ruling-check.sh"
+  # shellcheck disable=SC2016 # Literal source text stages the intended mutant.
+  sed 's/if \[ -n "$disagreement_ids" \]; then/if false; then # FM_TEST_DISABLE_DISAGREEMENT_SURFACE/' \
+    "$CHECK" > "$mutant"
+  chmod 0700 "$mutant"
+  grep -Fq 'FM_TEST_DISABLE_DISAGREEMENT_SURFACE' "$mutant" \
+    || fail "could not stage the disagreement-surface mutant"
+  out=$(FM_HOME="$home" FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" "$mutant") \
+    || fail "disagreement-surface mutant execution failed"
+  [ -z "$out" ] || fail "disabled disagreement surface unexpectedly emitted: $out"
+  pass "disabling the disagreement surface turns the persistent-disagreement assertion red"
 }
 
 test_missing_perl_wakes_before_watcher_operation() {
@@ -815,8 +877,11 @@ test_global_install_preserves_and_releases_legacy_task_identity
 test_detection_dedupe_malformed_and_immutability
 test_detection_retries_until_durable_wake_is_acknowledged
 test_every_malformed_resolver_state_wakes_and_recovers_after_repair
-test_writer_producible_interleaving_and_revisions_remain_valid
-test_validator_predicates_and_history_guards_are_load_bearing
+test_validator_storage_predicates_are_load_bearing
+test_persistent_queue_log_disagreement_wakes_once_without_mutation
+test_roll_forward_window_rechecks_before_waking
+test_settled_queue_and_commit_log_stay_silent
+test_disagreement_surface_mutant_is_killed
 test_missing_perl_wakes_before_watcher_operation
 test_captain_hold_on_task_kind_is_replyable
 test_answer_reads_latest_complete_open_ruling_without_mutation

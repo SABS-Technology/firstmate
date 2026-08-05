@@ -35,6 +35,17 @@ An unchanged last COMMIT permits idempotent roll-forward after interruption, whi
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 
+## Resolver integrity criterion (SC-1)
+
+A resolver log is accepted only when its storage properties and raw record grammar are positively validated.
+Content-level agreement between a REPLY and a COMMIT is deliberately not revalidated by the detector.
+The program-owned writer already requires the last record for the hold to be a matching REPLY before it appends a COMMIT, while a non-program writer falls within the local ruling-channel trust gap accepted by the captain's 2026-08-04 ruling.
+
+The detector separately compares the canonical captain queue's open state with the resolver log's settled state.
+When an open replyable hold has a COMMIT last, it reads both sources again after a bounded delay so the normal COMMIT-before-close roll-forward window can finish.
+If the later queue and log observations still disagree, the detector emits one deduplicated privacy-safe `captain-ruling-error queue-log-disagreement <hold-id>` notification through the existing durable watcher acknowledgment machinery.
+It never includes answer text and never resolves the disagreement silently in favor of either source.
+
 The `resolve-item` subcommand handles a captain hold carried by ordinary work.
 It requires the canonical `data/decisions/<hold-id>.md` record, commits its matching reply under the same ruling-resolution lock, records the decision digest and pointer on the existing work item, and clears only the captain hold.
 It accepts no routed identities and contains no task-completion path, so resolving the decision cannot complete the underlying work or release dependencies that represent completion of that work.
@@ -72,6 +83,7 @@ Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
 Captain-ruling round-trip verification date: 2026-08-03.
 Review-finding regression verification date: 2026-08-04.
+Queue-versus-log disagreement regression verification date: 2026-08-05.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.

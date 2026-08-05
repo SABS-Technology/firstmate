@@ -15,8 +15,6 @@ FM_RULING_LAST_TYPE=
 FM_RULING_LAST_DECISION=
 FM_RULING_LAST_ROUTES=
 FM_RULING_COMMIT_RETRY=0
-FM_RULING_KNOWN_IDS_READY=0
-FM_RULING_KNOWN_IDS=
 
 fm_ruling_sha256() {  # <text>
   if command -v shasum >/dev/null 2>&1; then
@@ -28,52 +26,16 @@ fm_ruling_sha256() {  # <text>
   fi
 }
 
-fm_ruling_known_ids_load() {
-  local queue ids decisions file id
-  [ "$FM_RULING_KNOWN_IDS_READY" -eq 0 ] || return 0
-  queue=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-captain-queue.sh" --json 2>/dev/null) || return 1
-  ids=$(printf '%s\n' "$queue" | jq -r '
-    if .schema == "fm-captain-queue.v1" then
-      .items[] | select(.replyable == true) | .id
-    else
-      error("captain queue schema invalid")
-    end
-  ') || return 1
-  decisions=${DATA:-$FM_HOME/data}/decisions
-  if [ -d "$decisions" ] && [ ! -L "$decisions" ]; then
-    for file in "$decisions"/*.md; do
-      [ -f "$file" ] && [ ! -L "$file" ] || continue
-      id=${file##*/}
-      id=${id%.md}
-      fm_pr_task_id_valid "$id" || continue
-      ids="${ids}${ids:+$'\n'}${id}"
-    done
-  fi
-  FM_RULING_KNOWN_IDS=$(printf '%s\n' "$ids" | sed '/^$/d' | LC_ALL=C sort -u) || return 1
-  FM_RULING_KNOWN_IDS_READY=1
-}
-
-fm_ruling_hold_known() {  # <hold-id>
-  fm_ruling_known_ids_load || return 1
-  printf '%s\n' "$FM_RULING_KNOWN_IDS" | grep -Fqx -- "$1"
-}
-
 fm_ruling_log_valid() {
-  local device id
-  local -a known_ids=()
+  local device
   [ ! -e "$FM_RULING_LOG" ] && [ ! -L "$FM_RULING_LOG" ] && return 0
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
   device=$(fm_pr_file_device "$STATE") || return 1
   fm_pr_private_file_valid "$FM_RULING_LOG" 600 "$device" || return 1
   command -v perl >/dev/null 2>&1 || return 1
-  fm_ruling_known_ids_load || return 1
-  while IFS= read -r id; do
-    [ -n "$id" ] && known_ids+=("$id")
-  done <<< "$FM_RULING_KNOWN_IDS"
   perl -MFcntl=:DEFAULT -e '
     # FM_RULING_RAW_VALIDATOR: this reader must preserve every ledger byte.
-    my ($path, $device, @known_ids) = @ARGV;
-    my %known = map { $_ => 1 } @known_ids;
+    my ($path, $device) = @ARGV;
     exit 1 unless $device =~ /\A[0-9]+\z/;
     sysopen(my $file, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or exit 1;
     my @stat = stat($file);
@@ -81,7 +43,6 @@ fm_ruling_log_valid() {
       && ($stat[2] & 07777) == 0600 && $stat[7] > 0;
     binmode($file, ":raw") or exit 1;
     my ($buffer, $total) = ("", 0);
-    my (%last_type, %latest_reply);
     while (1) {
       my $read = sysread($file, my $chunk, 4096);
       exit 1 unless defined $read;
@@ -90,33 +51,18 @@ fm_ruling_log_valid() {
       $buffer .= $chunk;
       while ((my $newline = index($buffer, "\n")) >= 0) {
         my $line = substr($buffer, 0, $newline + 1, "");
-        exit 1 if length($line) >= 4096 || !valid_transition($line);
+        exit 1 if length($line) >= 4096 || !valid_record($line);
       }
       exit 1 if length($buffer) > 4096;
     }
     close($file) or exit 1;
     exit 1 unless $buffer eq "" && $total == $stat[7];
 
-    sub valid_transition {
+    sub valid_record {
       my ($line) = @_;
-      if ($line =~ /\AREPLY\t([A-Za-z0-9_-][A-Za-z0-9._-]*)\t([0-9a-f]{64})\t-\n\z/) {
-        my ($id, $decision) = ($1, $2);
-        return 0 unless $known{$id};
-        return 0 if exists $latest_reply{$id} && $latest_reply{$id} eq $decision;
-        $latest_reply{$id} = $decision;
-        $last_type{$id} = "REPLY";
-        return 1;
-      }
-      if ($line =~ /\ACOMMIT\t([A-Za-z0-9_-][A-Za-z0-9._-]*)\t([0-9a-f]{64})\t([0-9a-f]{64})\n\z/) {
-        my ($id, $decision) = ($1, $2);
-        return 0 unless ($last_type{$id} || "") eq "REPLY";
-        return 0 unless ($latest_reply{$id} || "") eq $decision;
-        $last_type{$id} = "COMMIT";
-        return 1;
-      }
-      return 0;
+      return $line =~ /\A(?:REPLY\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t-|COMMIT\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t[0-9a-f]{64})\n\z/;
     }
-  ' "$FM_RULING_LOG" "$device" "${known_ids[@]}" 2>/dev/null
+  ' "$FM_RULING_LOG" "$device" 2>/dev/null
 }
 
 fm_ruling_append() {  # <type> <id> <decision-digest> <routes-digest-or-dash>
@@ -179,11 +125,9 @@ fm_ruling_reply_candidates() {
 fm_ruling_ingest() {
   local id answer digest previous candidates
   fm_ruling_log_valid || return 1
-  fm_ruling_known_ids_load || return 1
   candidates=$(fm_ruling_reply_candidates) || return 1
   while IFS=$'\t' read -r id answer; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
-    fm_ruling_hold_known "$id" || continue
     digest=$(fm_ruling_sha256 "$answer") || return 1
     previous=$(fm_ruling_last_reply_digest "$id" 2>/dev/null || true)
     [ "$digest" = "$previous" ] || fm_ruling_append REPLY "$id" "$digest" - || return 1

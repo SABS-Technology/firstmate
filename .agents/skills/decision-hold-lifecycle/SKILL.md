@@ -40,6 +40,8 @@ A status change is not ruling ingestion and must never substitute for the decisi
 ## Captain-ruling ingestion turn
 
 When a `check:` wake contains `captain-ruling <hold-id>[,<hold-id>...]`, process every named identity in the authoritative `FM_HOME` before returning to routine queue work.
+When it instead contains `captain-ruling-error queue-log-disagreement <hold-id>[,<hold-id>...]`, treat it as a persistent disagreement between the canonical queue and resolver log, inspect the interrupted resolution, and resume or repair that same lifecycle without interpreting or re-recording the captain's answer from the wake.
+`docs/decision-hold-lifecycle.md` owns the SC-1 integrity boundary, including the deliberate exclusion of content-level REPLY-versus-COMMIT validation under the captain's 2026-08-04 ruling.
 The wake deliberately contains identities rather than answer text, so read each exact current answer with `bin/fm-captain-ruling-check.sh --answer <hold-id>`.
 Read `tasks-axi show <hold-id> --full` and use its kind to select the matching guarded resolution path.
 For a captain-kind hold, take the originating work id and decision key from its body rather than reconstructing them by splitting the hold identity.

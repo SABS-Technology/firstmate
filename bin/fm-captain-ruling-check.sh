@@ -14,6 +14,10 @@
 # pair in state/.captain-rulings-seen only after the watcher durably appends the
 # matching wake, and prints one
 # `captain-ruling <id>[,<id>...]` line when a new ruling needs an agent turn.
+# If the queue still calls a hold open while its last resolver record is COMMIT,
+# it rechecks both sources after a bounded delay and emits the privacy-safe
+# `captain-ruling-error queue-log-disagreement <id>[,<id>...]` only when that
+# disagreement survives the normal COMMIT-before-close roll-forward window.
 # It never changes captain-replies.md and never resolves a hold.
 # `--answer <id>` gives the handling agent the latest complete answer for one
 # still-open captain hold without exposing answer text in the watcher wake.
@@ -38,6 +42,10 @@ SEEN="$STATE/.captain-rulings-seen"
 PENDING_ACK="$STATE/.captain-ruling-pending-ack"
 CAPTAIN_QUEUE="$SCRIPT_DIR/fm-captain-queue.sh"
 RULING_LOCK="$STATE/.captain-ruling-resolution.lock"
+RULING_DISAGREEMENT_RECHECK_DELAY=${FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY:-5}
+case "$RULING_DISAGREEMENT_RECHECK_DELAY" in
+  ''|*[!0-9]*) RULING_DISAGREEMENT_RECHECK_DELAY=5 ;;
+esac
 
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -155,13 +163,13 @@ publish_seen() {
 }
 
 publish_pending_ack() {
-  local ids=$1 hashes=$2 device tmp
+  local notification=$1 hashes=$2 device tmp
   device=$(fm_pr_file_device "$STATE") || return 1
   if [ -e "$PENDING_ACK" ] || [ -L "$PENDING_ACK" ]; then
     fm_pr_private_file_valid "$PENDING_ACK" 600 "$device" || return 1
   fi
   tmp=$(umask 077; mktemp "$STATE/.fm-captain-ruling-pending-ack.XXXXXX") || return 1
-  if { printf 'captain-ruling %s\n' "$ids"; printf '%s' "$hashes"; } > "$tmp" \
+  if { printf '%s\n' "$notification"; printf '%s' "$hashes"; } > "$tmp" \
     && chmod 0600 "$tmp" \
     && fm_pr_private_file_valid "$tmp" 600 "$device" \
     && fm_pr_regular_destination_on_device_or_absent "$PENDING_ACK" "$device" \
@@ -190,7 +198,8 @@ acknowledge_rulings() {
 }
 
 detect_rulings() {
-  local id answer answer_digest digest hashes='' ids='' candidates queue
+  local id answer answer_digest digest hashes='' ids='' candidates queue notification
+  local possible_disagreements='' disagreement_ids='' disagreement_hashes='' second_queue
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
   if ! fm_ruling_ingest; then
     printf 'captain-ruling-error resolver-log-invalid\n'
@@ -204,6 +213,13 @@ detect_rulings() {
     captain_hold_is_replyable "$id" "$queue" || continue
     answer_digest=$(fm_ruling_sha256 "$answer") || return 0
     fm_ruling_last_record "$id" || return 0
+    if [ "$FM_RULING_LAST_TYPE" = COMMIT ]; then
+      case ",$possible_disagreements," in
+        *",$id,"*) ;;
+        *) possible_disagreements="${possible_disagreements:+$possible_disagreements,}$id" ;;
+      esac
+      continue
+    fi
     [ "$FM_RULING_LAST_TYPE" = REPLY ] \
       && [ "$FM_RULING_LAST_DECISION" = "$answer_digest" ] || continue
     digest=$(ruling_digest "$id" "$answer") || return 0
@@ -214,9 +230,35 @@ detect_rulings() {
     hashes="${hashes}${digest}"$'\n'
     case ",$ids," in *",$id,"*) ;; *) ids="${ids:+$ids,}$id" ;; esac
   done <<< "$candidates"
+
+  if [ -n "$possible_disagreements" ]; then
+    sleep "$RULING_DISAGREEMENT_RECHECK_DELAY"
+    second_queue=$(captain_queue) || return 0
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      captain_hold_is_replyable "$id" "$second_queue" || continue
+      fm_ruling_last_record "$id" || return 0
+      [ "$FM_RULING_LAST_TYPE" = COMMIT ] || continue
+      digest=$(ruling_digest "$id" \
+        "queue-log-disagreement:$FM_RULING_LAST_DECISION:$FM_RULING_LAST_ROUTES") || return 0
+      if { [ -f "$SEEN" ] && grep -Fqx "$digest" "$SEEN"; } \
+        || printf '%s' "$disagreement_hashes" | grep -Fqx "$digest"; then
+        continue
+      fi
+      disagreement_hashes="${disagreement_hashes}${digest}"$'\n'
+      disagreement_ids="${disagreement_ids:+$disagreement_ids,}$id"
+    done <<< "$(printf '%s\n' "$possible_disagreements" | tr ',' '\n')"
+  fi
+  if [ -n "$disagreement_ids" ]; then
+    notification="captain-ruling-error queue-log-disagreement $disagreement_ids"
+    publish_pending_ack "$notification" "$disagreement_hashes" || return 0
+    printf '%s\n' "$notification"
+    return 0
+  fi
   [ -n "$ids" ] || return 0
-  publish_pending_ack "$ids" "$hashes" || return 0
-  printf 'captain-ruling %s\n' "$ids"
+  notification="captain-ruling $ids"
+  publish_pending_ack "$notification" "$hashes" || return 0
+  printf '%s\n' "$notification"
 }
 
 answer_for_hold() {
