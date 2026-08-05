@@ -42,37 +42,42 @@ make_case() {
   printf '%s\n' "$case_dir"
 }
 
-# gh-axi mock recording every invocation to a log file, and gh mock answering
-# headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
+# gh-axi mock recording every invocation to a log file, and gh mock reproducing
+# the stable machine contract fm-pr-merge.sh reads: headRefOid for
+# fm-pr-check.sh's pr_head lookup and the TAB-joined state/merged pair for the
+# merge-state reconcile. Args: case_dir head_sha
 add_gh_mocks() {
   local case_dir=$1 head=$2
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
-  "pr view")
-    if [ -f "$FM_TEST_GH_MERGED" ]; then
-      printf '  state: merged\n  merged: yes\n'
-    else
-      printf '  state: open\n  merged: no\n'
-    fi
-    ;;
   "pr merge") : > "$FM_TEST_GH_MERGED" ;;
 esac
 exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *state,merged*)
+        if [ -f "\$FM_TEST_GH_MERGED" ]; then
+          printf 'MERGED\ttrue\n'
+        else
+          printf 'OPEN\tfalse\n'
+        fi
+        exit 0
+        ;;
     esac
     ;;
 esac
 exit 0
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+  : > "$case_dir/gh.log"
 }
 
 # gh-axi mock that fails the merge call but succeeds everything else, so a
@@ -83,16 +88,20 @@ add_gh_mocks_merge_fails() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
-  "pr view") printf '  state: open\n  merged: no\n'; exit 0 ;;
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
 esac
 exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+case " $* " in
+  *state,merged*) printf 'OPEN\tfalse\n' ;;
+esac
 exit 0
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+  : > "$case_dir/gh.log"
 }
 
 run_pr_merge() {
@@ -100,6 +109,7 @@ run_pr_merge() {
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GH_MERGED="$case_dir/forge-merged" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
@@ -138,7 +148,7 @@ SH
   [ "$stages" = $'pr-open\nmerged' ] \
     || fail "post-merge reconcile did not match forge truth: $stages"
   merge_calls=$(grep -Fc 'pr merge 16 --repo example/repo --squash' "$case_dir/gh-axi.log")
-  view_calls=$(grep -Fc 'pr view 16 --repo example/repo' "$case_dir/gh-axi.log")
+  view_calls=$(grep -Fc 'pr view 16 --repo example/repo --json state,merged' "$case_dir/gh.log")
   [ "$merge_calls" -eq 1 ] || fail "post-merge recovery invoked merge $merge_calls times"
   [ "$view_calls" -eq 2 ] || fail "post-merge recovery did not re-read forge truth: $view_calls views"
   pass "a failed post-merge emit reconciles from forge truth without repeating merge"

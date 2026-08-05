@@ -710,6 +710,42 @@ test_settled_queue_and_commit_log_stay_silent() {
   pass "a settled queue and COMMIT log remain silent"
 }
 
+test_edited_reply_never_hides_an_interrupted_resolution() {
+  local world home fakebin log old_digest out second answer
+  world=$(make_home interrupted-then-edited); home=${world%%|*}; fakebin=${world#*|}
+  log="$home/state/captain-ruling-log.tsv"
+  old_digest=$(printf '%s' 'Use route north.' | shasum -a 256 | awk '{print $1}')
+  cat > "$home/data/captain-replies.md" <<'EOF'
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+review-decision-route: Use route south instead.
+<!-- END APPEND-ONLY: captain-replies -->
+EOF
+  printf 'REPLY\treview-decision-route\t%s\t-\nCOMMIT\treview-decision-route\t%s\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' \
+    "$old_digest" "$old_digest" > "$log"
+  chmod 0600 "$log"
+
+  out=$(FM_HOME="$home" FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" "$CHECK") \
+    || fail "interrupted-then-edited detection failed"
+  [ "$out" = 'captain-ruling-error queue-log-disagreement review-decision-route' ] \
+    || fail "an edited reply hid the interrupted post-COMMIT resolution: $out"
+  grep -Fqx "COMMIT	review-decision-route	$old_digest	cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" "$log" \
+    || fail "disagreement detection lost the committed snapshot"
+
+  ack_detection "$home" "$fakebin" "$out" \
+    || fail "could not acknowledge the interrupted-resolution wake"
+  second=$(FM_HOME="$home" FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" "$CHECK") \
+    || fail "post-acknowledgment revision check failed"
+  [ "$second" = 'captain-ruling-revision review-decision-route' ] \
+    || fail "the edited reply lost its revision wake after the disagreement wake: $second"
+  answer=$(read_answer "$home" "$fakebin" review-decision-route) \
+    || fail "the edited reply was not readable for the handling agent"
+  [ "$answer" = 'Use route south instead.' ] \
+    || fail "answer read returned the wrong edited reply: $answer"
+  pass "an edited reply never withdraws the interrupted post-COMMIT resume signal"
+}
+
 test_disagreement_surface_mutant_is_killed() {
   local world home fakebin mutant_bin source name mutant out
   world=$(make_home disagreement-mutant); home=${world%%|*}; fakebin=${world#*|}
@@ -906,6 +942,7 @@ test_closed_commit_revision_wakes_and_remains_readable
 test_persistent_queue_log_disagreement_wakes_once_without_mutation
 test_roll_forward_window_rechecks_before_waking
 test_settled_queue_and_commit_log_stay_silent
+test_edited_reply_never_hides_an_interrupted_resolution
 test_disagreement_surface_mutant_is_killed
 test_missing_perl_wakes_before_watcher_operation
 test_captain_hold_on_task_kind_is_replyable

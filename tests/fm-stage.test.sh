@@ -109,16 +109,56 @@ test_corrupt_ledger_refuses_without_mutation() {
   pass "stage emission refuses an already-corrupt ledger without changing its bytes"
 }
 
+# A probe bin symlinks every real script and shadows only fm-append-log-lib.sh
+# with a copy whose publish sequence can be interrupted at a chosen point.
+# fm-stage.sh resolves its library from the directory of the invoked path, so
+# the probed script runs the real emitter over the faulted writer.
+FAULTED_STAGE=''
+
+install_append_fault_probe() {
+  local probe_bin=$1 source name marker
+  mkdir -p "$probe_bin"
+  for source in "$ROOT"/bin/*; do
+    name=${source##*/}
+    ln -sf "$source" "$probe_bin/$name"
+  done
+  rm -f "$probe_bin/fm-append-log-lib.sh"
+  awk '
+    /^      write_all\(\$replacement, \$record\) or die;$/ {
+      print "      if ($fault eq \"partial-record\") {"
+      print "        write_all($replacement, substr($record, 0, int(length($record) / 2))) or die;"
+      print "        die;"
+      print "      }"
+      print $0
+      print "      die if $fault eq \"before-publish\";"
+      next
+    }
+    { print }
+    /^    my \(\$path, \$device, \$record, \$schema\) = @ARGV;$/ {
+      print "    my $fault = $ENV{FM_STAGE_TEST_APPEND_FAULT} // \"\";"
+    }
+    /^      rename\(\$temporary, \$path\) or die;$/ {
+      print "      die if $fault eq \"after-publish\";"
+    }
+  ' "$ROOT/bin/fm-append-log-lib.sh" > "$probe_bin/fm-append-log-lib.sh"
+  for marker in 'FM_STAGE_TEST_APPEND_FAULT' 'partial-record' 'before-publish' 'after-publish'; do
+    [ "$(grep -Fc "$marker" "$probe_bin/fm-append-log-lib.sh")" -eq 1 ] \
+      || fail "could not stage the $marker append fault against the real writer"
+  done
+  FAULTED_STAGE="$probe_bin/fm-stage.sh"
+}
+
 test_append_failures_leave_only_complete_records() {
   local fault state ledger before rc
+  install_append_fault_probe "$TMP_ROOT/append-fault-bin"
   for fault in partial-record before-publish after-publish; do
     state=$(make_state "atomic-$fault")
     ledger="$state/stage-transitions.tsv"
     run_stage "$state" emit task-atomic implementation
     before=$(cat "$ledger")
     set +e
-    FM_APPEND_LOG_FAULT_INJECT="$fault" run_stage "$state" emit task-atomic validation \
-      > "$state/stdout" 2> "$state/stderr"
+    FM_STAGE_TEST_APPEND_FAULT="$fault" FM_STATE_OVERRIDE="$state" "$FAULTED_STAGE" \
+      emit task-atomic validation > "$state/stdout" 2> "$state/stderr"
     rc=$?
     set -e
     expect_code 1 "$rc" "$fault append fault must be reported"

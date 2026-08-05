@@ -142,7 +142,7 @@ fm_stage_read() {
     echo "error: stage transition record is unavailable or malformed" >&2
     return 1
   }
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r line; do
     fm_stage_parse_record "$line" || return 1
     [ "$FM_STAGE_TASK" = "$task" ] || continue
     if [ "$command" = history ]; then

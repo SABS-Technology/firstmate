@@ -14,13 +14,16 @@
 # pair in state/.captain-rulings-seen only after the watcher durably appends the
 # matching wake, and prints one
 # `captain-ruling <id>[,<id>...]` line when a new ruling needs an agent turn.
-# If the queue still calls a hold open while its last resolver record is COMMIT,
-# it rechecks both sources after a bounded delay and emits the privacy-safe
-# `captain-ruling-error queue-log-disagreement <id>[,<id>...]` only when that
-# disagreement survives the normal COMMIT-before-close roll-forward window.
+# If the queue still calls a hold open while the resolver log already carries a
+# COMMIT for it, it rechecks both sources after a bounded delay and emits the
+# privacy-safe `captain-ruling-error queue-log-disagreement <id>[,<id>...]` only
+# when that disagreement survives the normal COMMIT-before-close roll-forward
+# window. A later REPLY on that same hold does not withdraw the disagreement,
+# so an interrupted resolution keeps its resume signal.
 # It never changes captain-replies.md and never resolves a hold.
 # `--answer <id>` gives the handling agent the latest complete answer for one
-# still-open captain hold without exposing answer text in the watcher wake.
+# captain hold while that hold is open or while a post-COMMIT revision is
+# pending, without exposing answer text in the watcher wake.
 # A post-COMMIT edit emits `captain-ruling-revision <id>` even after the old hold
 # closes, so it becomes a new decision requiring explicit revocation.
 # Reply detection and answer reads serialize with fm-decision-hold.sh resolve,
@@ -201,7 +204,7 @@ acknowledge_rulings() {
 }
 
 detect_rulings() {
-  local id answer answer_digest digest hashes='' ids='' candidates queue notification
+  local id answer answer_digest digest hashes='' ids='' candidates queue notification replyable
   local revision_hashes='' revision_ids=''
   local possible_disagreements='' disagreement_ids='' disagreement_hashes='' second_queue
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
@@ -217,6 +220,14 @@ detect_rulings() {
     answer_digest=$(fm_ruling_sha256 "$answer") || return 0
     fm_ruling_last_record "$id" || return 0
     fm_ruling_committed_record "$id" || return 0
+    replyable=0
+    captain_hold_is_replyable "$id" "$queue" && replyable=1
+    if [ "$replyable" = 1 ] && [ -n "$FM_RULING_COMMITTED_DECISION" ]; then
+      case ",$possible_disagreements," in
+        *",$id,"*) ;;
+        *) possible_disagreements="${possible_disagreements:+$possible_disagreements,}$id" ;;
+      esac
+    fi
     if [ "$FM_RULING_LAST_TYPE" = REPLY ] \
       && [ "$FM_RULING_LAST_DECISION" = "$answer_digest" ] \
       && [ -n "$FM_RULING_COMMITTED_DECISION" ]; then
@@ -228,14 +239,8 @@ detect_rulings() {
       fi
       continue
     fi
-    captain_hold_is_replyable "$id" "$queue" || continue
-    if [ "$FM_RULING_LAST_TYPE" = COMMIT ]; then
-      case ",$possible_disagreements," in
-        *",$id,"*) ;;
-        *) possible_disagreements="${possible_disagreements:+$possible_disagreements,}$id" ;;
-      esac
-      continue
-    fi
+    [ "$replyable" = 1 ] || continue
+    [ -z "$FM_RULING_COMMITTED_DECISION" ] || continue
     [ "$FM_RULING_LAST_TYPE" = REPLY ] \
       && [ "$FM_RULING_LAST_DECISION" = "$answer_digest" ] || continue
     digest=$(ruling_digest "$id" "$answer") || return 0
@@ -253,10 +258,10 @@ detect_rulings() {
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       captain_hold_is_replyable "$id" "$second_queue" || continue
-      fm_ruling_last_record "$id" || return 0
-      [ "$FM_RULING_LAST_TYPE" = COMMIT ] || continue
+      fm_ruling_committed_record "$id" || return 0
+      [ -n "$FM_RULING_COMMITTED_DECISION" ] || continue
       digest=$(ruling_digest "$id" \
-        "queue-log-disagreement:$FM_RULING_LAST_DECISION:$FM_RULING_LAST_ROUTES") || return 0
+        "queue-log-disagreement:$FM_RULING_COMMITTED_DECISION:$FM_RULING_COMMITTED_ROUTES") || return 0
       if { [ -f "$SEEN" ] && grep -Fqx "$digest" "$SEEN"; } \
         || printf '%s' "$disagreement_hashes" | grep -Fqx "$digest"; then
         continue

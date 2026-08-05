@@ -88,7 +88,7 @@ fm_ruling_last_record() {  # <hold-id>
     [ "$id" = "$wanted" ] || continue
     FM_RULING_LAST_TYPE=$type
     FM_RULING_LAST_DECISION=$decision
-    # shellcheck disable=SC2034 # Read by fm-captain-ruling-check.sh after the call.
+    # shellcheck disable=SC2034 # Completes the last-record read contract for callers.
     FM_RULING_LAST_ROUTES=$routes
   done < "$FM_RULING_LOG"
 }

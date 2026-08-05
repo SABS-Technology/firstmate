@@ -6,7 +6,6 @@ fm_append_log_record() {  # <path> <device> <record> <schema>
   command -v perl >/dev/null 2>&1 || return 1
   perl -MFcntl=:DEFAULT,:flock -MFile::Basename=dirname -MFile::Temp=tempfile -MIO::Handle -e '
     my ($path, $device, $record, $schema) = @ARGV;
-    my $fault = $ENV{FM_APPEND_LOG_FAULT_INJECT} // "";
     exit 1 unless $device =~ /\A[0-9]+\z/ && length($record) <= 4096;
     my $lock_path = "$path.append.lock";
     sysopen(my $lock, $lock_path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600) or exit 1;
@@ -31,16 +30,10 @@ fm_append_log_record() {  # <path> <device> <record> <schema>
         die unless eof($reader) && close($reader);
       }
       die unless valid_record($schema, $record);
-      if ($fault eq "partial-record") {
-        write_all($replacement, substr($record, 0, int(length($record) / 2))) or die;
-        die;
-      }
       write_all($replacement, $record) or die;
-      die if $fault eq "before-publish";
       $replacement->sync or die;
       close($replacement) or die;
       rename($temporary, $path) or die;
-      die if $fault eq "after-publish";
       1;
     };
     if (!$ok) {

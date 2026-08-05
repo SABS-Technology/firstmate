@@ -43,13 +43,15 @@ Content-level agreement between a REPLY and a COMMIT is deliberately not revalid
 The program-owned writer already requires the last record for the hold to be a matching REPLY before it appends a COMMIT, while a non-program writer falls within the local ruling-channel trust gap accepted by the captain's 2026-08-04 ruling.
 
 The detector separately compares the canonical captain queue's open state with the resolver log's settled state.
-When an open replyable hold has a COMMIT last, it reads both sources again after a bounded delay so the normal COMMIT-before-close roll-forward window can finish.
+When the log already carries a COMMIT for a hold the queue still calls open and replyable, it reads both sources again after a bounded delay so the normal COMMIT-before-close roll-forward window can finish.
+A later REPLY on that hold is a separate observation and never withdraws the disagreement, so an interrupted resolution keeps its resume signal even once the reply has been edited.
 If the later queue and log observations still disagree, the detector emits one deduplicated privacy-safe `captain-ruling-error queue-log-disagreement <hold-id>` notification through the existing durable watcher acknowledgment machinery.
 It never includes answer text and never resolves the disagreement silently in favor of either source.
 
 The reply-edit window uses snapshot semantics under the captain's 2026-08-05 ruling.
 The ruling acted on is the complete reply the program observed when it appended the first COMMIT, and an editor change after that observation cannot retroactively replace it.
 The detector surfaces a later complete answer as a distinct revision wake even after the original hold closes.
+When one identity is both an interrupted resolution and a revision, the disagreement wake is delivered first and the revision wake follows on a later observation, because only the emitted notification is acknowledged.
 The lifecycle agent then creates a new captain-held decision for explicit revocation or retention; it never rewrites the committed decision record or reuses the resolved identity.
 
 The `resolve-item` subcommand handles a captain hold carried by ordinary work.
