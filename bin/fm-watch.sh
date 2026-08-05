@@ -699,6 +699,16 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
   return 0
 fi
 
+# Bootstrap declares Perl as a required dependency before watcher operation.
+# If a caller bypasses that startup refusal, preserve the same loud failure as a
+# durable privacy-safe wake instead of reaching a fallback runner that cannot
+# launch the registered check.
+if ! command -v perl >/dev/null 2>&1; then
+  reason='watcher-error: required dependency unavailable: perl'
+  fm_wake_append check watcher-dependency "$reason" || exit 1
+  wake "$reason"
+fi
+
 # Before acquiring the watcher lock or enumerating any runnable check, replace
 # or quarantine checks created by older versions. The migration compares bytes
 # and reads data only; it never invokes legacy check files through Bash.
