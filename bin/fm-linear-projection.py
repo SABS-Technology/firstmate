@@ -252,8 +252,12 @@ def meta_pr(state_dir, task_id):
     return values[-1] if values and PR_RE.fullmatch(values[-1]) else ""
 
 
-def find_pr(item, state_dir):
-    return meta_pr(state_dir, item["id"])
+def find_pr(item, state_dir, journal):
+    live_pr = meta_pr(state_dir, item["id"])
+    if live_pr:
+        return live_pr
+    record = journal["items"].get(item["id"])
+    return record["pr_url"] if record and not record["archived"] else ""
 
 
 def github_status(url):
@@ -305,7 +309,7 @@ def github_status(url):
     return {"state": state, "checks": checks}
 
 
-def build_entities(items, queue, stages, state_dir):
+def build_entities(items, queue, stages, state_dir, journal):
     decisions = {entry["id"]: entry for entry in queue if isinstance(entry, dict) and ID_RE.fullmatch(str(entry.get("id", "")))}
     for task_id, entry in decisions.items():
         if task_id not in items:
@@ -317,7 +321,7 @@ def build_entities(items, queue, stages, state_dir):
     for item in items.values():
         item["stage"] = stages.get(item["id"])
         item["entity_type"] = "decision" if item["id"] in decisions else "work"
-        item["pr_url"] = find_pr(item, state_dir)
+        item["pr_url"] = find_pr(item, state_dir, journal)
     for item in items.values():
         if item["entity_type"] != "decision" or item["pr_url"]:
             continue
@@ -445,7 +449,7 @@ def sync(root, home, data_dir, state_dir, config_dir):
     validate_state(journal, namespace)
     if not stages and any(record["issue_digest"] for record in journal["items"].values()):
         raise ProjectionError("stage ledger invalid for tracked projection")
-    entities = build_entities(items, queue, stages, state_dir)
+    entities = build_entities(items, queue, stages, state_dir, journal)
     token = os.environ["LINEAR_API_KEY"]
     summary = {"schema": "fm-linear-projection-run.v1", "source_count": len(entities), "created": 0, "updated": 0, "linked": 0, "archived": 0, "unchanged": 0, "absent": 0}
     live_ids = {item["id"] for item in entities}

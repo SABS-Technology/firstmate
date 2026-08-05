@@ -55,7 +55,8 @@ cat > "$FAKE_GITHUB" <<'EOF'
 #!/usr/bin/env bash
 set -eu
 [ "$#" -eq 1 ]
-printf '%s\n' '{"state":"open","checks":"green"}'
+jq -cn --arg state "${FAKE_GITHUB_STATE:-open}" --arg checks "${FAKE_GITHUB_CHECKS:-green}" \
+  '{state:$state,checks:$checks}'
 EOF
 chmod +x "$FAKE_GITHUB"
 
@@ -299,6 +300,39 @@ test_unchanged_second_run_is_mutation_free() {
   pass "an unchanged second run emits no second Linear mutation"
 }
 
+test_journal_pr_fallback_survives_metadata_cleanup() {
+  local home state issue_id pr_url attachment_id log summary
+  home=$(make_fixture journal-pr-fallback)
+  state="$home/state/linear-projection.json"
+  printf 'ship-a\tpr-open\t2026-08-03T02:00:00Z\n' >> "$home/state/stage-transitions.tsv"
+  FAKE_GITHUB_STATE=open sync_env "$home" >/dev/null \
+    || fail "initial live-metadata PR sync failed"
+  issue_id=$(jq -r '.items["ship-a"].remote_issue_id' "$state")
+  pr_url=$(jq -r '.items["ship-a"].pr_url' "$state")
+  attachment_id=$(jq -r '.items["ship-a"].attachment_id' "$state")
+  [ "$pr_url" = 'https://github.com/SABS-Technology/firstmate/pull/42' ] \
+    || fail "initial sync did not authenticate the live PR into the journal"
+
+  rm "$home/state/ship-a.meta"
+  printf 'ship-a\tcomplete\t2026-08-03T03:00:00Z\n' >> "$home/state/stage-transitions.tsv"
+  : > "$home/linear.log"
+  summary=$(FAKE_GITHUB_STATE=merged sync_env "$home") \
+    || fail "post-cleanup journal PR fallback sync failed: $summary"
+  log=$(jq -s . "$home/linear.log")
+  printf '%s' "$log" | jq -e --arg issue "$issue_id" '
+    any(.[] | select(.operationName == "UpdateIssue" and .variables.id == $issue);
+      .variables.input.description
+      | contains("Stage: complete\nGitHub PR: https://github.com/SABS-Technology/firstmate/pull/42\nGitHub PR status: merged; checks=green"))
+    and ([.[] | select(.operationName == "LinkGitHubPr")] | length) == 0
+  ' >/dev/null || fail "cleanup lost or relinked the journal-authenticated PR: $log"
+  jq -e --arg pr "$pr_url" --arg attachment "$attachment_id" '
+    .items["ship-a"].pr_url == $pr
+    and .items["ship-a"].attachment_id == $attachment
+    and .items["ship-a"].revision == 3
+  ' "$state" >/dev/null || fail "post-cleanup sync changed the established PR relationship"
+  pass "journal fallback retains and refreshes a cleaned-up PR without relinking"
+}
+
 test_archive_boundary_never_resurrects_completed_item() {
   local home after_first after_archive after_repeat archive_ops
   home=$(make_fixture archive-boundary)
@@ -496,6 +530,7 @@ test_approved_destination_attestation_gates_sensitive_egress
 test_entities_keep_stage_and_pr_axes_and_link_decisions
 test_pr_links_require_canonical_metadata
 test_unchanged_second_run_is_mutation_free
+test_journal_pr_fallback_survives_metadata_cleanup
 test_archive_boundary_never_resurrects_completed_item
 test_journal_preflight_refuses_all_malformed_records_before_transport
 test_stage_corruption_refuses_regression_without_losing_prior_valid_stage
