@@ -352,43 +352,66 @@ EOF
   pass "discarded detection retries, then durable append acknowledgment dedupes"
 }
 
-test_malformed_resolver_log_wakes_and_recovers_after_repair() {
-  local world home fakebin pending log before_reply before_log out
+test_every_malformed_resolver_state_wakes_and_recovers_after_repair() {
+  local world home fakebin pending log shape before_reply before_log out
   world=$(make_home malformed-resolver-log); home=${world%%|*}; fakebin=${world#*|}
   pending="$home/data/captain-replies.md"
   log="$home/state/captain-ruling-log.tsv"
   cat > "$pending" <<'EOF'
 <!-- BEGIN APPEND-ONLY: captain-replies -->
-review-decision-route: Use route north.
 <!-- END APPEND-ONLY: captain-replies -->
 EOF
-  printf 'BROKEN\n' > "$log"
-  chmod 0600 "$log"
-  before_reply=$(shasum -a 256 "$pending")
-  before_log=$(shasum -a 256 "$log")
   printf '%s\n' fm-pr-check-migration-scan-v1 > "$home/state/.pr-check-migration-scan-v1"
   printf '%s\n' fm-pr-check-migration-v1 > "$home/state/.pr-check-migration-v1"
   chmod 0600 "$home/state/.pr-check-migration-scan-v1" "$home/state/.pr-check-migration-v1"
   FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
     "$CHECK" --install || fail "could not install the detector for malformed-log coverage"
 
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
-    FM_POLL=0 FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=5 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=999999 \
-    perl -e 'alarm shift; exec @ARGV' 10 "$WATCH" > "$home/watch.out" 2> "$home/watch.err" \
-    || fail "watcher failed while surfacing malformed resolver state"
-  assert_grep 'captain-ruling-error resolver-log-invalid' "$home/state/.wake-queue" \
-    "the installed detector silently disabled ruling wakes on malformed resolver state"
-  [ "$(shasum -a 256 "$pending")" = "$before_reply" ] \
-    && [ "$(shasum -a 256 "$log")" = "$before_log" ] \
-    || fail "malformed-state detection changed captain input or repaired the resolver log"
+  for shape in unsafe-storage malformed-record torn-reply torn-commit; do
+    case "$shape" in
+      unsafe-storage)
+        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        chmod 0644 "$log"
+        ;;
+      malformed-record)
+        printf 'BROKEN\n' > "$log"
+        chmod 0600 "$log"
+        ;;
+      torn-reply)
+        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-' > "$log"
+        chmod 0600 "$log"
+        ;;
+      torn-commit)
+        printf 'COMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' > "$log"
+        chmod 0600 "$log"
+        ;;
+    esac
+    rm -f "$home/state/.wake-queue"
+    before_reply=$(shasum -a 256 "$pending")
+    before_log=$(shasum -a 256 "$log")
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+      PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+      FM_POLL=0 FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=5 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=999999 \
+      perl -e 'alarm shift; exec @ARGV' 10 "$WATCH" > "$home/watch.out" 2> "$home/watch.err" \
+      || fail "watcher failed while surfacing $shape resolver state"
+    [ "$(grep -Fc 'captain-ruling-error resolver-log-invalid' "$home/state/.wake-queue")" -eq 1 ] \
+      || fail "$shape resolver state did not produce one durable supervisor wake"
+    [ "$(shasum -a 256 "$pending")" = "$before_reply" ] \
+      && [ "$(shasum -a 256 "$log")" = "$before_log" ] \
+      || fail "$shape detection changed captain input or repaired the resolver log"
+  done
 
   : > "$log"
   chmod 0600 "$log"
+  cat > "$pending" <<'EOF'
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+review-decision-route: Use route north.
+<!-- END APPEND-ONLY: captain-replies -->
+EOF
   out=$(run_check "$home" "$fakebin") || fail "detector did not recover after explicit log repair"
   [ "$out" = 'captain-ruling review-decision-route' ] \
     || fail "explicit repair did not restore ruling detection: $out"
-  pass "malformed resolver state wakes without mutation and explicit repair restores detection"
+  pass "every malformed resolver-state class wakes durably without mutation, then explicit repair restores detection"
 }
 
 test_partial_reply_region_waits_for_completion() {
@@ -533,7 +556,7 @@ test_global_check_identity_is_reserved
 test_global_install_preserves_and_releases_legacy_task_identity
 test_detection_dedupe_malformed_and_immutability
 test_detection_retries_until_durable_wake_is_acknowledged
-test_malformed_resolver_log_wakes_and_recovers_after_repair
+test_every_malformed_resolver_state_wakes_and_recovers_after_repair
 test_captain_hold_on_task_kind_is_replyable
 test_answer_reads_latest_complete_open_ruling_without_mutation
 test_answer_ingestion_refuses_while_resolution_lock_is_held

@@ -27,13 +27,20 @@ fm_ruling_sha256() {  # <text>
 }
 
 fm_ruling_log_valid() {
-  local line type id decision routes
+  local type id decision routes extra read_status
   [ ! -e "$FM_RULING_LOG" ] && [ ! -L "$FM_RULING_LOG" ] && return 0
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
   local device
   device=$(fm_pr_file_device "$STATE") || return 1
   fm_pr_private_file_valid "$FM_RULING_LOG" 600 "$device" || return 1
-  while IFS=$'\t' read -r type id decision routes extra || [ -n "${type:-}" ]; do
+  while :; do
+    type='' id='' decision='' routes='' extra=''
+    IFS=$'\t' read -r type id decision routes extra
+    read_status=$?
+    if [ "$read_status" -ne 0 ]; then
+      [ -z "$type$id$decision$routes$extra" ] || return 1
+      break
+    fi
     [ -z "${extra:-}" ] && fm_pr_task_id_valid "$id" \
       && [[ "$decision" =~ ^[0-9a-f]{64}$ ]] || return 1
     case "$type:$routes" in
@@ -103,6 +110,7 @@ fm_ruling_reply_candidates() {
 
 fm_ruling_ingest() {
   local id answer digest previous candidates
+  fm_ruling_log_valid || return 1
   candidates=$(fm_ruling_reply_candidates) || return 1
   while IFS=$'\t' read -r id answer; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
