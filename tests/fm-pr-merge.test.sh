@@ -49,6 +49,16 @@ add_gh_mocks() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr view")
+    if [ -f "$FM_TEST_GH_MERGED" ]; then
+      printf '  state: merged\n  merged: yes\n'
+    else
+      printf '  state: open\n  merged: no\n'
+    fi
+    ;;
+  "pr merge") : > "$FM_TEST_GH_MERGED" ;;
+esac
 exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<SH
@@ -73,6 +83,7 @@ add_gh_mocks_merge_fails() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr view") printf '  state: open\n  merged: no\n'; exit 0 ;;
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
 esac
 exit 0
@@ -89,6 +100,7 @@ run_pr_merge() {
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_GH_MERGED="$case_dir/forge-merged" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
   rc=$?
@@ -97,6 +109,39 @@ run_pr_merge() {
     return 1
   fi
   return "$rc"
+}
+
+test_post_merge_emit_failure_reconciles_without_second_merge() {
+  local case_dir rc stages merge_calls view_calls
+  case_dir=$(make_case post-merge-reconcile)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/date" <<'SH'
+#!/usr/bin/env bash
+count=0
+[ ! -f "$FM_TEST_DATE_COUNT" ] || count=$(cat "$FM_TEST_DATE_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" > "$FM_TEST_DATE_COUNT"
+[ "$count" -ne 2 ] || exit 1
+exec /bin/date "$@"
+SH
+  chmod +x "$case_dir/fakebin/date"
+
+  FM_TEST_DATE_COUNT="$case_dir/date-count" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/16 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+
+  expect_code 0 "$rc" "post-merge reconcile should recover the failed emit"
+  stages=$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" history task-x1 | cut -f2)
+  [ "$stages" = $'pr-open\nmerged' ] \
+    || fail "post-merge reconcile did not match forge truth: $stages"
+  merge_calls=$(grep -Fc 'pr merge 16 --repo example/repo --squash' "$case_dir/gh-axi.log")
+  view_calls=$(grep -Fc 'pr view 16 --repo example/repo' "$case_dir/gh-axi.log")
+  [ "$merge_calls" -eq 1 ] || fail "post-merge recovery invoked merge $merge_calls times"
+  [ "$view_calls" -eq 2 ] || fail "post-merge recovery did not re-read forge truth: $view_calls views"
+  pass "a failed post-merge emit reconciles from forge truth without repeating merge"
 }
 
 test_records_pr_and_head_before_merging() {
@@ -333,6 +378,7 @@ test_parses_pr_url_for_gh_axi() {
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_corrupt_stage_ledger_refuses_before_forge_merge
+test_post_merge_emit_failure_reconciles_without_second_merge
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge

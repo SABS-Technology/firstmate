@@ -96,7 +96,7 @@ state/               volatile runtime signals; gitignored
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
   captain-ruling.check.sh  generated global registered check for captain replies written outside chat; invokes bin/fm-captain-ruling-check.sh
   .captain-rulings-seen    private durable answer-digest set preventing repeat ruling wakes across polls and restarts
-  captain-ruling-log.tsv  private append-only REPLY/COMMIT log that makes reply ingestion and pre-mutation resolution one ordered CAS contract
+  captain-ruling-log.tsv  private append-only REPLY/COMMIT log whose first COMMIT snapshots the observed ruling; later replies are new decisions requiring explicit revocation
   stage-transitions.tsv  append-only work-stage ledger written by fm-stage.sh: <task-id>, stage, UTC timestamp; a separate axis from <id>.status, never derived from it, and retained across teardown
   linear-pr-receipts/<id>.receipt  validated egress-neutral GitHub PR identity retained atomically by teardown before task metadata cleanup; exact fields and publication mechanics are owned by bin/fm-teardown.sh
   linear-projection.json  private Linear projection journal: remote ids, source digests, per-item revisions, attachment receipts, and archive tombstones; never a credential or vendor response body (docs/configuration.md "Linear projection")
@@ -478,7 +478,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `project-management` - load before adding, creating, removing, or initializing a project.
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
-- `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, on a `captain-ruling <hold-id>[,<hold-id>...]` `check:` wake, and when recording or routing the captain's answer.
+- `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, on a `captain-ruling` or `captain-ruling-revision` `check:` wake, and when recording or routing the captain's answer.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Program-owned captain ruling log and captain-owned editor ingestion.
+# Program-owned captain ruling log and captain-owned editor snapshots.
 #
 # Records are totally ordered in state/captain-ruling-log.tsv:
 #   REPLY<TAB><hold-id><TAB><answer-digest><TAB>-
 #   COMMIT<TAB><hold-id><TAB><answer-digest><TAB><route-set-digest>
-# A ruling is committed only while its COMMIT is the last record for the hold.
+# The first COMMIT for a hold is its snapshot commit point.
+# A later REPLY is a new decision and never supersedes that committed ruling.
 
 # shellcheck source=bin/fm-append-log-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-append-log-lib.sh"
@@ -14,7 +15,10 @@ FM_RULING_REPLIES=${FM_CAPTAIN_REPLIES_OVERRIDE:-${DATA:-$FM_HOME/data}/captain-
 FM_RULING_LAST_TYPE=
 FM_RULING_LAST_DECISION=
 FM_RULING_LAST_ROUTES=
+FM_RULING_COMMITTED_DECISION=
+FM_RULING_COMMITTED_ROUTES=
 FM_RULING_COMMIT_RETRY=0
+FM_RULING_COMMIT_CONFLICT=
 
 fm_ruling_sha256() {  # <text>
   if command -v shasum >/dev/null 2>&1; then
@@ -84,6 +88,7 @@ fm_ruling_last_record() {  # <hold-id>
     [ "$id" = "$wanted" ] || continue
     FM_RULING_LAST_TYPE=$type
     FM_RULING_LAST_DECISION=$decision
+    # shellcheck disable=SC2034 # Read by fm-captain-ruling-check.sh after the call.
     FM_RULING_LAST_ROUTES=$routes
   done < "$FM_RULING_LOG"
 }
@@ -98,6 +103,24 @@ fm_ruling_last_reply_digest() {  # <hold-id>
   done < "$FM_RULING_LOG"
   [ -n "$found" ] || return 1
   printf '%s\n' "$found"
+}
+
+fm_ruling_committed_record() {  # <hold-id>
+  local wanted=$1 type id decision routes
+  FM_RULING_COMMITTED_DECISION=
+  FM_RULING_COMMITTED_ROUTES=
+  fm_ruling_log_valid || return 1
+  [ -f "$FM_RULING_LOG" ] || return 0
+  while IFS=$'\t' read -r type id decision routes; do
+    [ "$type" = COMMIT ] && [ "$id" = "$wanted" ] || continue
+    if [ -n "$FM_RULING_COMMITTED_DECISION" ] \
+      && { [ "$FM_RULING_COMMITTED_DECISION" != "$decision" ] \
+        || [ "$FM_RULING_COMMITTED_ROUTES" != "$routes" ]; }; then
+      return 1
+    fi
+    FM_RULING_COMMITTED_DECISION=$decision
+    FM_RULING_COMMITTED_ROUTES=$routes
+  done < "$FM_RULING_LOG"
 }
 
 fm_ruling_reply_candidates() {
@@ -151,21 +174,29 @@ fm_ruling_answer() {  # <hold-id>
 fm_ruling_commit() {  # <hold-id> <decision-digest> <routes-digest>
   local id=$1 decision=$2 routes=$3
   FM_RULING_COMMIT_RETRY=0
+  FM_RULING_COMMIT_CONFLICT=
   fm_ruling_ingest || return 1
-  fm_ruling_last_record "$id" || return 1
-  if [ "$FM_RULING_LAST_TYPE" = COMMIT ]; then
-    [ "$FM_RULING_LAST_DECISION" = "$decision" ] \
-      && [ "$FM_RULING_LAST_ROUTES" = "$routes" ] || return 3
-    # fm-decision-hold.sh reads this sourced-library result after the call.
-    # shellcheck disable=SC2034
-    FM_RULING_COMMIT_RETRY=1
-    return 0
+  fm_ruling_committed_record "$id" || return 1
+  if [ -n "$FM_RULING_COMMITTED_DECISION" ]; then
+    if [ "$FM_RULING_COMMITTED_DECISION" = "$decision" ] \
+      && [ "$FM_RULING_COMMITTED_ROUTES" = "$routes" ]; then
+      # shellcheck disable=SC2034 # Read by fm-decision-hold.sh after the call.
+      FM_RULING_COMMIT_RETRY=1
+      return 0
+    fi
+    # shellcheck disable=SC2034 # Read by fm-decision-hold.sh after the call.
+    FM_RULING_COMMIT_CONFLICT=committed
+    return 3
   fi
-  [ "$FM_RULING_LAST_TYPE" = REPLY ] \
-    && [ "$FM_RULING_LAST_DECISION" = "$decision" ] || return 3
-  fm_ruling_append COMMIT "$id" "$decision" "$routes" || return 1
   fm_ruling_last_record "$id" || return 1
-  [ "$FM_RULING_LAST_TYPE" = COMMIT ] \
-    && [ "$FM_RULING_LAST_DECISION" = "$decision" ] \
-    && [ "$FM_RULING_LAST_ROUTES" = "$routes" ]
+  [ "$FM_RULING_LAST_TYPE" = REPLY ] \
+    && [ "$FM_RULING_LAST_DECISION" = "$decision" ] || {
+      # shellcheck disable=SC2034 # Read by fm-decision-hold.sh after the call.
+      FM_RULING_COMMIT_CONFLICT=observed
+      return 3
+    }
+  fm_ruling_append COMMIT "$id" "$decision" "$routes" || return 1
+  fm_ruling_committed_record "$id" || return 1
+  [ "$FM_RULING_COMMITTED_DECISION" = "$decision" ] \
+    && [ "$FM_RULING_COMMITTED_ROUTES" = "$routes" ]
 }

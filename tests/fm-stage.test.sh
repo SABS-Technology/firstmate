@@ -109,6 +109,46 @@ test_corrupt_ledger_refuses_without_mutation() {
   pass "stage emission refuses an already-corrupt ledger without changing its bytes"
 }
 
+test_append_failures_leave_only_complete_records() {
+  local fault state ledger before rc
+  for fault in partial-record before-publish after-publish; do
+    state=$(make_state "atomic-$fault")
+    ledger="$state/stage-transitions.tsv"
+    run_stage "$state" emit task-atomic implementation
+    before=$(cat "$ledger")
+    set +e
+    FM_APPEND_LOG_FAULT_INJECT="$fault" run_stage "$state" emit task-atomic validation \
+      > "$state/stdout" 2> "$state/stderr"
+    rc=$?
+    set -e
+    expect_code 1 "$rc" "$fault append fault must be reported"
+    run_stage "$state" preflight \
+      || fail "$fault append fault left a partial ledger record"
+    if [ "$fault" = after-publish ]; then
+      [ "$(run_stage "$state" current task-atomic)" = validation ] \
+        || fail "after-publish fault did not leave the complete record"
+    else
+      [ "$(cat "$ledger")" = "$before" ] \
+        || fail "$fault append changed the original valid ledger"
+    fi
+  done
+  pass "append faults leave each newline-terminated stage record fully present or absent"
+}
+
+test_unterminated_valid_record_is_rejected() {
+  local state ledger rc
+  state=$(make_state unterminated-record)
+  ledger="$state/stage-transitions.tsv"
+  printf 'task-a\timplementation\t2026-08-05T12:00:00Z' > "$ledger"
+  chmod 0600 "$ledger"
+  set +e
+  run_stage "$state" preflight >/dev/null 2>&1
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "unterminated shaped record must be refused"
+  pass "a shaped record without its terminating newline is never readable state"
+}
+
 test_axes_round_trip_independently() {
   local state paused_status working_status
   state=$(make_state independent-axes)
@@ -173,6 +213,8 @@ test_append_only_restart_round_trip
 test_duplicate_and_backward_events_are_preserved
 test_invalid_event_is_rejected_without_mutation
 test_corrupt_ledger_refuses_without_mutation
+test_append_failures_leave_only_complete_records
+test_unterminated_valid_record_is_rejected
 test_axes_round_trip_independently
 test_supervision_meanings_are_unchanged
 

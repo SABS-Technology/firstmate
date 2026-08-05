@@ -4,6 +4,8 @@
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
 # A successful merge emits the independent merged work stage.
+# Before invoking merge, the wrapper reads forge truth and reconciles an
+# already-merged PR by emitting the missing stage without calling merge again.
 #
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
@@ -64,6 +66,20 @@ reject_repo_overrides() {
 
 reject_repo_overrides "$@" || exit 1
 
+pr_is_merged() {
+  local output
+  output=$(gh-axi pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO") || return 2
+  if grep -Eq '^  (state: merged|merged: yes)$' <<< "$output"; then
+    return 0
+  fi
+  grep -Eq '^  state: (open|closed)$' <<< "$output" || return 2
+  return 1
+}
+
+emit_merged_stage() {
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" merged
+}
+
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ] || [ -L "$META" ]; then
@@ -82,5 +98,25 @@ if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
 fi
 
+if pr_is_merged; then
+  emit_merged_stage
+  exit 0
+else
+  state_rc=$?
+  [ "$state_rc" -eq 1 ] || {
+    echo "error: could not reconcile PR merge state" >&2
+    exit 1
+  }
+fi
+
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
-FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" merged
+if ! emit_merged_stage; then
+  pr_is_merged || {
+    echo "error: merge succeeded but its stage could not be reconciled" >&2
+    exit 1
+  }
+  emit_merged_stage || {
+    echo "error: merge is confirmed but the merged stage remains unavailable" >&2
+    exit 1
+  }
+fi

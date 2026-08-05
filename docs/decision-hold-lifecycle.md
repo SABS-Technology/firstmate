@@ -28,14 +28,15 @@ It enumerates the active home's blocked work through `tasks-axi list --blocked` 
 It requires the canonical regular `data/decisions/<hold-id>.md` record and verifies that every routed task's durable body or brief points to that exact path before any mutation.
 It requires ownership of the home session lock because direct concurrent backlog mutation is unsupported.
 It enumerates blocked dependents again before the first write and refuses if that inventory changed.
-Reply ingestion and resolution serialize through one scoped ruling-resolution lock.
-The detector ingests captain-owned `data/captain-replies.md` snapshots as ordered REPLY digests in `state/captain-ruling-log.tsv`.
-The resolver appends a matching COMMIT to that same log before its first backlog mutation and refuses when a newer REPLY is last.
-An unchanged last COMMIT permits idempotent roll-forward after interruption, while a revised reply makes the stale retry refuse before any further mutation.
+Reply ingestion and resolution serialize program processes through one scoped ruling-resolution lock, but the captain-owned editor deliberately does not participate in that lock.
+The detector ingests complete `data/captain-replies.md` observations as ordered REPLY digests in `state/captain-ruling-log.tsv`.
+The resolver appends the identity's first matching COMMIT before its first backlog mutation, which is the snapshot commit point selected by the captain on 2026-08-05.
+That COMMIT remains authoritative for idempotent roll-forward after interruption even if a later editor observation appends another REPLY.
+A later REPLY is surfaced as `captain-ruling-revision <hold-id>` and becomes a new decision requiring explicit revocation of the committed ruling rather than an overwrite of it.
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 
-## Resolver integrity criterion (SC-1)
+## Resolver integrity and snapshot criterion (SC-1)
 
 A resolver log is accepted only when its storage properties and raw record grammar are positively validated.
 Content-level agreement between a REPLY and a COMMIT is deliberately not revalidated by the detector.
@@ -45,6 +46,11 @@ The detector separately compares the canonical captain queue's open state with t
 When an open replyable hold has a COMMIT last, it reads both sources again after a bounded delay so the normal COMMIT-before-close roll-forward window can finish.
 If the later queue and log observations still disagree, the detector emits one deduplicated privacy-safe `captain-ruling-error queue-log-disagreement <hold-id>` notification through the existing durable watcher acknowledgment machinery.
 It never includes answer text and never resolves the disagreement silently in favor of either source.
+
+The reply-edit window uses snapshot semantics under the captain's 2026-08-05 ruling.
+The ruling acted on is the complete reply the program observed when it appended the first COMMIT, and an editor change after that observation cannot retroactively replace it.
+The detector surfaces a later complete answer as a distinct revision wake even after the original hold closes.
+The lifecycle agent then creates a new captain-held decision for explicit revocation or retention; it never rewrites the committed decision record or reuses the resolved identity.
 
 The `resolve-item` subcommand handles a captain hold carried by ordinary work.
 It requires the canonical `data/decisions/<hold-id>.md` record, commits its matching reply under the same ruling-resolution lock, records the decision digest and pointer on the existing work item, and clears only the captain hold.
@@ -62,7 +68,7 @@ The queue file is only a fallback and does not become the primary ruling path.
 
 `bin/fm-captain-ruling-check.sh` emits only privacy-safe hold identities from its watcher path.
 It reads complete `<hold-id>: <answer>` lines from captain-owned `data/captain-replies.md`, atomically ingests new answer digests into the program log, and never writes the editor surface.
-Its explicit `--answer <hold-id>` read returns the latest ingested complete answer only while that captain hold is still open.
+Its explicit `--answer <hold-id>` read returns the latest ingested complete answer while the hold is open or while a post-COMMIT revision is pending.
 On that wake, the lifecycle skill owns the semantic agent turn: it writes the exact answer to `data/decisions/<hold-id>.md`, then selects `resolve` for a dedicated captain-kind hold or `resolve-item` for a hold carried by ordinary work.
 The guarded resolver remains the only decision-resolution path, so a status-only change, missing work item, or missing dependency edge cannot close a dedicated captain decision or complete ordinary work.
 
@@ -89,9 +95,18 @@ The focused end-to-end regression uses only synthetic `sample` identities and de
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
-The undisclosed-dependent and superseded-ruling regressions each carry an anti-tautology proof: the same fixture is replayed against a copy of `bin/fm-decision-hold.sh` whose single refusal has been turned into a no-op, and the proof asserts that the falsified copy closes the hold.
-Two further regressions drive a resolve that commits its decision and then fails midway through clearing edges, and prove both retry directions from that state: an exact retry finishes routing even after the captain revised the reply, and a retry carrying a different decision is still refused.
-Each of those directions carries its own anti-tautology proof, one falsifying the committed-decision skip and one falsifying the retry identity record's decision comparison.
+The snapshot regression changes the editor surface immediately after the final ingest observation and before COMMIT, proves the observed answer routes and closes, and then proves the later edit emits a revision wake.
+Its staged mutant disables only the revision surface and becomes silent, which proves the wake is load-bearing.
+The interruption regression discovers both ruling-log and backlog changes, injects after every observed mutation, and distinguishes the pre-COMMIT REPLY position from COMMIT and every later position.
+Before COMMIT, a newly observed answer can replace the prepared record; from COMMIT onward, the committed answer rolls forward and the later edit becomes a new revocation decision.
+The legitimate partial-routing retry still finishes from the matching COMMIT, while a retry carrying a different decision identity remains refused.
+
+## Interruption-probe observation boundary
+
+The committed resolver regression observes two files: net changes to `data/backlog.md` around every synchronous `tasks-axi` child call, and net changes to `state/captain-ruling-log.tsv` around the program's append writer.
+Its process boundary is the resolver process and those direct child calls; external processes, direct writer bypasses, and mutations to other files are not observed.
+Its timing boundary is immediately before and after each call returns; a write-and-revert inside one call leaves no net durable change and is unobservable by construction.
+These residual classes are accepted under firstmate's 2026-08-05 ruling rather than covered by a filesystem watcher or write-during-call journal.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -112,7 +127,9 @@ ok - resolve requires the canonical record and exact routed-work pointer
 ok - resolve requires its session lock and refuses a changed dependent set
 ok - resolve discovers every still-blocked dependent and refuses an undisclosed one
 ok - resolve re-reads the captain ruling and refuses a superseded decision record
-ok - every discovered mutation interruption refuses stale retry; CAS-bypass mutant closes stale
+ok - the last observed answer commits, while a later edit becomes a distinct revocation decision
+ok - every observed mutation interruption preserves the committed snapshot and surfaces a later edit
+ok - every ordinary-work mutation interruption preserves the snapshot and surfaces a later edit
 ok - in-flight captain holds generate, wake, read, record, route, and resolve
 ok - ordinary-kind replies resolve only the captain hold and never complete the work item
 ok - an exact retry finishes routing a committed decision when no reply changed

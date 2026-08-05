@@ -40,6 +40,9 @@ A status change is not ruling ingestion and must never substitute for the decisi
 ## Captain-ruling ingestion turn
 
 When a `check:` wake contains `captain-ruling <hold-id>[,<hold-id>...]`, process every named identity in the authoritative `FM_HOME` before returning to routine queue work.
+When it contains `captain-ruling-revision <hold-id>[,<hold-id>...]`, the named identity already has a committed ruling and the edited answer is a new decision.
+Read the revised answer, inspect the committed decision record and routed work, and register a new stable captain-held decision that asks for explicit revocation or retention of the committed ruling.
+Never overwrite the old decision record, reopen the old identity, or apply the revision before that revocation decision resolves.
 When it instead contains `captain-ruling-error queue-log-disagreement <hold-id>[,<hold-id>...]`, treat it as a persistent disagreement between the canonical queue and resolver log, inspect the interrupted resolution, and resume or repair that same lifecycle without interpreting or re-recording the captain's answer from the wake.
 `docs/decision-hold-lifecycle.md` owns the SC-1 integrity boundary, including the deliberate exclusion of content-level REPLY-versus-COMMIT validation under the captain's 2026-08-04 ruling.
 The wake deliberately contains identities rather than answer text, so read each exact current answer with `bin/fm-captain-ruling-check.sh --answer <hold-id>`.
@@ -50,7 +53,7 @@ Create that work with normal `tasks-axi add` fields and `--blocked-by <hold-id>`
 Keep every dependent item in the same authoritative home as the hold and point its durable body or brief at the decision record rather than copying the ruling into multiple owners.
 For an ordinary-kind item, keep the existing work item as the implementation owner and do not invent a dependent, clear its work dependencies, or complete it as part of ruling resolution.
 Write the captain's exact answer to the private durable record `data/decisions/<hold-id>.md` in that home.
-Record the captain's reply verbatim, because `resolve` commits only when the latest ingested REPLY record matches it.
+Record the captain's reply verbatim, because the first `resolve` commits only when the observed REPLY record matches it.
 For a captain-kind hold, call `bin/fm-decision-hold.sh resolve <origin-id> <decision-key> --decision-file data/decisions/<hold-id>.md --routed-to <task-id>` with every routed identity.
 `resolve` also refuses while any task it discovers is still blocked by a captain-kind hold and absent from `--routed-to`, so route each such task rather than working around the refusal.
 For an ordinary-kind item, call `bin/fm-decision-hold.sh resolve-item <hold-id> --decision-file data/decisions/<hold-id>.md`; that command clears only the captain hold and leaves the work active.
@@ -59,8 +62,8 @@ Only after `resolve-item` succeeds may the ordinary work item proceed.
 Regenerate the pending-decisions projection after the matching command succeeds.
 Confirm the decision left the canonical captain queue and the routed or ordinary work remains in the structured backlog.
 If any creation, dependency, decision-record, or resolve step fails, leave the hold open, preserve the already-authored state, and retry the same identities rather than directly unholding or completing the hold.
-Retry with the decision record already prepared only when the captain reply did not change.
-When the captain revised the reply, the old record must refuse before mutation; read the new answer and author a new canonical decision record before resolving it.
+Retry with the already prepared decision record after interruption because the first matching COMMIT remains authoritative even when a later edit is waiting as a new decision.
+A post-COMMIT edit never changes that retry identity and requires explicit revocation through a new decision before any replacement ruling can be applied.
 
 `bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.

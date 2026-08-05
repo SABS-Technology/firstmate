@@ -1007,8 +1007,8 @@ test_resolve_refuses_a_superseded_captain_ruling() {
     > "$home/superseded.out" 2> "$home/superseded.err"; then
     fail "resolve closed a hold on a captain reply the captain had already revised"
   fi
-  assert_grep "newer captain reply" "$home/superseded.err" \
-    "the refusal must name the newer captain reply"
+  assert_grep "does not match the ruling observed at commit time" "$home/superseded.err" \
+    "the refusal must name the observed-ruling mismatch"
   show=$(tasks_in "$home" show "$hold" --full)
   assert_contains "$show" "state: queued" "the superseded resolve closed the hold"
   assert_contains "$show" "held: yes" "the superseded resolve released the hold"
@@ -1032,6 +1032,60 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   assert_contains "$show" "Use the west route instead." \
     "the closed hold did not retain the revised captain ruling"
   pass "resolve re-reads the captain ruling and refuses a superseded decision record"
+}
+
+test_revision_after_last_observation_commits_snapshot_and_becomes_new_decision() {
+  local origin=sample-snapshot-review key=route hold dependent home record hooked_bin source name show wake mutant_bin mutant out
+  hold="$origin-decision-$key"
+  dependent=sample-snapshot-work
+  home=$(make_ruling_home snapshot-interleaving "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add "$dependent" "Apply the observed snapshot" \
+    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null
+  hooked_bin="$home/snapshot-hook-bin"
+  mkdir -p "$hooked_bin"
+  for source in "$ROOT"/bin/*; do
+    name=${source##*/}
+    ln -sf "$source" "$hooked_bin/$name"
+  done
+  rm -f "$hooked_bin/fm-captain-ruling-log-lib.sh"
+  sed '/^fm_ruling_commit() {/,/^}/ {
+    /  fm_ruling_ingest || return 1/a\
+  printf "%s: %s\\n" "$id" "$FM_TEST_REVISED_REPLY" > "$FM_RULING_REPLIES"
+  }' "$ROOT/bin/fm-captain-ruling-log-lib.sh" \
+    > "$hooked_bin/fm-captain-ruling-log-lib.sh"
+  chmod +x "$hooked_bin/fm-captain-ruling-log-lib.sh"
+
+  FM_TEST_REVISED_REPLY='Use the west route instead.' \
+    run_falsified_decisions "$home" "$hooked_bin/fm-decision-hold.sh" \
+      resolve "$origin" "$key" --decision-file "$record" --routed-to "$dependent" >/dev/null \
+    || fail "snapshot resolve rejected the answer observed before the editor changed"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" 'state: done' "snapshot interleaving did not close the old decision"
+  assert_contains "$show" 'Use the east route.' "snapshot interleaving did not retain the observed answer"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" 'blocked: no' "snapshot interleaving did not route the committed answer"
+
+  mutant_bin="$home/revision-mutant-bin"
+  mkdir -p "$mutant_bin"
+  for source in "$ROOT"/bin/fm-*.sh; do
+    name=${source##*/}
+    ln -sf "$source" "$mutant_bin/$name"
+  done
+  rm -f "$mutant_bin/fm-captain-ruling-check.sh"
+  mutant="$mutant_bin/fm-captain-ruling-check.sh"
+  sed 's/if \[ -n "$revision_ids" \]; then/if false; then # FM_TEST_DISABLE_REVISION_SURFACE/' \
+    "$RULING_CHECK" > "$mutant"
+  chmod +x "$mutant"
+  out=$(FM_HOME="$home" "$mutant") || fail "revision-surface mutant execution failed"
+  [ -z "$out" ] || fail "disabled revision surface unexpectedly emitted: $out"
+
+  wake=$(FM_HOME="$home" "$RULING_CHECK") \
+    || fail "detector rejected the post-commit editor revision"
+  [ "$wake" = "captain-ruling-revision $hold" ] \
+    || fail "post-commit edit was not surfaced as a new decision: $wake"
+  pass "the last observed answer commits, while a later edit becomes a distinct revocation decision"
 }
 
 test_unterminated_reply_never_routes_or_closes() {
@@ -1067,9 +1121,57 @@ test_unterminated_reply_never_routes_or_closes() {
   pass "unterminated editor writes cannot append, route, or close; newline completion resumes"
 }
 
-test_every_mutation_interruption_refuses_a_superseded_commit() {
-  local origin=sample-interruption-review key=route hold record home mutation_count mutation_sequence position
-  local before after mutant show
+PROBED_DECISIONS=''
+
+install_resolution_mutation_probe() {  # <home> <discover|interrupt>
+  local home=$1 mode=$2 probe_bin source name
+  install_tasks_axi_call_probe "$home" "$mode"
+  probe_bin="$home/mutation-probe-bin"
+  mkdir -p "$probe_bin"
+  for source in "$ROOT"/bin/*; do
+    name=${source##*/}
+    ln -sf "$source" "$probe_bin/$name"
+  done
+  rm -f "$probe_bin/fm-append-log-lib.sh"
+  sed 's/^fm_append_log_record() {/fm_append_log_record_real() {/' \
+    "$ROOT/bin/fm-append-log-lib.sh" > "$probe_bin/fm-append-log-lib.sh"
+  cat >> "$probe_bin/fm-append-log-lib.sh" <<'EOF'
+
+fm_append_log_record() {
+  local before=absent after=absent rc next count type
+  [ ! -f "$1" ] || before=$(shasum -a 256 "$1")
+  fm_append_log_record_real "$@"
+  rc=$?
+  [ ! -f "$1" ] || after=$(shasum -a 256 "$1")
+  if [ "$before" != "$after" ] && [ "$4" = captain-ruling ]; then
+    type=${3%%$'\t'*}
+    if [ "$FM_MUTATION_PROBE_MODE" = discover ]; then
+      printf 'ruling-log %s\n' "$type" >> "$FM_HOME/mutations"
+    else
+      count=$(cat "$FM_HOME/mutation-count")
+      next=$((count + 1))
+      printf '%s\n' "$next" > "$FM_HOME/mutation-count"
+      if [ -n "${FM_MUTATION_FAIL_AT:-}" ] && [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
+        return 1
+      fi
+    fi
+  fi
+  return "$rc"
+}
+EOF
+  PROBED_DECISIONS="$probe_bin/fm-decision-hold.sh"
+}
+
+run_probed_decisions() {  # <home> <command args...>
+  local home=$1
+  shift
+  FM_MUTATION_PROBE_MODE=${FM_MUTATION_PROBE_MODE:-discover} \
+    run_falsified_decisions "$home" "$PROBED_DECISIONS" "$@"
+}
+
+test_every_mutation_interruption_preserves_snapshot_and_surfaces_revision() {
+  local origin=sample-interruption-review key=route hold record home mutation_count mutation_sequence mutation_events position
+  local show wake answer event before after
   hold="$origin-decision-$key"
   home=$(make_ruling_home interruption-discovery "$origin" "$key" 'Use the east route.')
   record="$home/data/decisions/$hold.md"
@@ -1077,12 +1179,15 @@ test_every_mutation_interruption_refuses_a_superseded_commit() {
     tasks_in "$home" add "$dep" "Apply the interruption ruling" --kind ship --repo sample \
       --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
   done
-  install_tasks_axi_call_probe "$home" discover
-  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+  install_resolution_mutation_probe "$home" discover
+  FM_MUTATION_PROBE_MODE=discover run_probed_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
     --routed-to sample-interruption-first --routed-to sample-interruption-second >/dev/null
   mutation_count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
+  mutation_events=$(cat "$home/mutations")
   mutation_sequence=$(tr '\n' ';' < "$home/mutations")
-  [ "$mutation_count" -ge 4 ] || fail "mutation discovery found only $mutation_count positions"
+  [ "$mutation_count" -ge 6 ] || fail "mutation discovery found only $mutation_count positions"
+  grep -qxF 'ruling-log COMMIT' "$home/mutations" \
+    || fail "mutation discovery omitted the ruling-log COMMIT: $mutation_sequence"
 
   position=1
   while [ "$position" -le "$mutation_count" ]; do
@@ -1093,49 +1198,55 @@ test_every_mutation_interruption_refuses_a_superseded_commit() {
         --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
     done
     printf '0\n' > "$home/mutation-count"
-    install_tasks_axi_call_probe "$home" interrupt
-    if FM_MUTATION_FAIL_AT="$position" run_decisions "$home" resolve "$origin" "$key" \
+    install_resolution_mutation_probe "$home" interrupt
+    if FM_MUTATION_PROBE_MODE=interrupt FM_MUTATION_FAIL_AT="$position" \
+      run_probed_decisions "$home" resolve "$origin" "$key" \
       --decision-file "$record" --routed-to sample-interruption-first \
       --routed-to sample-interruption-second >/dev/null 2>&1; then
       fail "interruption position $position completed instead of failing; sequence=$mutation_sequence"
     fi
     write_captain_reply "$home" "$hold" 'Use the west route instead.'
-    before=$(shasum -a 256 "$home/data/backlog.md")
-    if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
-      --routed-to sample-interruption-first --routed-to sample-interruption-second \
-      > "$home/retry.out" 2> "$home/retry.err"; then
-      fail "stale retry succeeded after interruption position $position"
+    event=$(printf '%s\n' "$mutation_events" | sed -n "${position}p")
+    if [ "$event" = 'ruling-log REPLY' ]; then
+      before=$(shasum -a 256 "$home/data/backlog.md")
+      if FM_MUTATION_PROBE_MODE=interrupt run_probed_decisions "$home" resolve "$origin" "$key" \
+        --decision-file "$record" --routed-to sample-interruption-first \
+        --routed-to sample-interruption-second > "$home/retry.out" 2> "$home/retry.err"; then
+        fail "pre-commit retry accepted the superseded prepared record"
+      fi
+      assert_grep 'does not match the ruling observed at commit time' "$home/retry.err" \
+        "pre-commit interruption failed for the wrong reason"
+      after=$(shasum -a 256 "$home/data/backlog.md")
+      [ "$before" = "$after" ] || fail "pre-commit refusal mutated the backlog"
+      printf 'Use the west route instead.\n' > "$record"
+      FM_MUTATION_PROBE_MODE=interrupt run_probed_decisions "$home" resolve "$origin" "$key" \
+        --decision-file "$record" --routed-to sample-interruption-first \
+        --routed-to sample-interruption-second >/dev/null \
+        || fail "pre-commit interruption did not accept the newly observed answer"
+      show=$(tasks_in "$home" show "$hold" --full)
+      assert_contains "$show" 'Use the west route instead.' \
+        "pre-commit interruption did not commit the newly observed answer"
+      position=$((position + 1))
+      continue
     fi
-    assert_grep 'newer captain reply' "$home/retry.err" \
-      "stale retry at mutation position $position failed for the wrong reason"
-    after=$(shasum -a 256 "$home/data/backlog.md")
-    [ "$before" = "$after" ] \
-      || fail "stale retry mutated backlog after interruption position $position"
+    FM_MUTATION_PROBE_MODE=interrupt run_probed_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+      --routed-to sample-interruption-first --routed-to sample-interruption-second \
+      > "$home/retry.out" 2> "$home/retry.err" \
+      || fail "snapshot retry failed after interruption position $position"
+    show=$(tasks_in "$home" show "$hold" --full)
+    assert_contains "$show" 'state: done' "snapshot retry did not close after position $position"
+    assert_contains "$show" 'Use the east route.' "snapshot retry replaced the committed answer at position $position"
+    wake=$(FM_HOME="$home" "$RULING_CHECK") \
+      || fail "post-commit revision check failed after position $position"
+    [ "$wake" = "captain-ruling-revision $hold" ] \
+      || fail "post-commit edit was not surfaced as a new decision after position $position: $wake"
+    answer=$(FM_HOME="$home" "$RULING_CHECK" --answer "$hold") \
+      || fail "post-commit revision answer was unreadable after position $position"
+    [ "$answer" = 'Use the west route instead.' ] \
+      || fail "post-commit revision returned the wrong answer after position $position: $answer"
     position=$((position + 1))
   done
-
-  home=$(make_ruling_home interruption-mutant "$origin" "$key" 'Use the east route.')
-  record="$home/data/decisions/$hold.md"
-  for dep in sample-interruption-first sample-interruption-second; do
-    tasks_in "$home" add "$dep" "Apply the interruption ruling" --kind ship --repo sample \
-      --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
-  done
-  printf '0\n' > "$home/mutation-count"
-  install_tasks_axi_call_probe "$home" interrupt
-  FM_MUTATION_FAIL_AT=1 run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
-    --routed-to sample-interruption-first --routed-to sample-interruption-second >/dev/null 2>&1 \
-    && fail "mutant setup did not interrupt at the first mutation"
-  write_captain_reply "$home" "$hold" 'Use the west route instead.'
-  mutant=$(falsified_ruling_commit "$home" dedicated-cas-bypass)
-  rm "$home/fakebin/tasks-axi"
-  run_falsified_decisions "$home" "$mutant" resolve "$origin" "$key" \
-    --decision-file "$record" --routed-to sample-interruption-first \
-    --routed-to sample-interruption-second >/dev/null 2>&1 \
-    || fail "CAS-bypass mutant did not expose the stale close"
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" 'state: done' \
-    "property regression stayed green against the CAS-bypass mutant"
-  pass "every discovered mutation interruption refuses stale retry; CAS-bypass mutant closes stale"
+  pass "every observed mutation interruption preserves the committed snapshot and surfaces a later edit"
 }
 
 EMBEDDED_HOME=''
@@ -1154,17 +1265,20 @@ setup_embedded_ruling_home() {  # <name> <id> <answer>
   EMBEDDED_HOME=$home
 }
 
-test_every_embedded_mutation_interruption_refuses_a_superseded_commit() {
-  local id=sample-embedded-interruption home record mutation_count mutation_sequence position
-  local before after mutant show
+test_every_embedded_mutation_interruption_preserves_snapshot_and_surfaces_revision() {
+  local id=sample-embedded-interruption home record mutation_count mutation_sequence mutation_events position
+  local show wake event before after
   setup_embedded_ruling_home embedded-interruption-discovery "$id" 'Use the east route.'
   home=$EMBEDDED_HOME
   record="$home/data/decisions/$id.md"
-  install_tasks_axi_call_probe "$home" discover
-  run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null
+  install_resolution_mutation_probe "$home" discover
+  FM_MUTATION_PROBE_MODE=discover run_probed_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null
   mutation_count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
+  mutation_events=$(cat "$home/mutations")
   mutation_sequence=$(tr '\n' ';' < "$home/mutations")
-  [ "$mutation_count" -ge 2 ] || fail "embedded mutation discovery found only $mutation_count positions"
+  [ "$mutation_count" -ge 4 ] || fail "embedded mutation discovery found only $mutation_count positions"
+  grep -qxF 'ruling-log COMMIT' "$home/mutations" \
+    || fail "embedded mutation discovery omitted COMMIT: $mutation_sequence"
 
   position=1
   while [ "$position" -le "$mutation_count" ]; do
@@ -1172,44 +1286,47 @@ test_every_embedded_mutation_interruption_refuses_a_superseded_commit() {
     home=$EMBEDDED_HOME
     record="$home/data/decisions/$id.md"
     printf '0\n' > "$home/mutation-count"
-    install_tasks_axi_call_probe "$home" interrupt
-    if FM_MUTATION_FAIL_AT="$position" run_decisions "$home" resolve-item "$id" \
+    install_resolution_mutation_probe "$home" interrupt
+    if FM_MUTATION_PROBE_MODE=interrupt FM_MUTATION_FAIL_AT="$position" \
+      run_probed_decisions "$home" resolve-item "$id" \
       --decision-file "$record" >/dev/null 2>&1; then
       fail "embedded interruption position $position completed instead of failing; sequence=$mutation_sequence"
     fi
     write_captain_reply "$home" "$id" 'Use the west route instead.'
-    before=$(shasum -a 256 "$home/data/backlog.md")
-    if run_decisions "$home" resolve-item "$id" --decision-file "$record" \
-      > "$home/retry.out" 2> "$home/retry.err"; then
-      fail "embedded stale retry succeeded after interruption position $position"
+    event=$(printf '%s\n' "$mutation_events" | sed -n "${position}p")
+    if [ "$event" = 'ruling-log REPLY' ]; then
+      before=$(shasum -a 256 "$home/data/backlog.md")
+      if FM_MUTATION_PROBE_MODE=interrupt run_probed_decisions "$home" resolve-item "$id" \
+        --decision-file "$record" > "$home/retry.out" 2> "$home/retry.err"; then
+        fail "embedded pre-commit retry accepted the superseded record"
+      fi
+      assert_grep 'does not match the ruling observed at commit time' "$home/retry.err" \
+        "embedded pre-commit interruption failed for the wrong reason"
+      after=$(shasum -a 256 "$home/data/backlog.md")
+      [ "$before" = "$after" ] || fail "embedded pre-commit refusal mutated the backlog"
+      printf 'Use the west route instead.\n' > "$record"
+      FM_MUTATION_PROBE_MODE=interrupt run_probed_decisions "$home" resolve-item "$id" \
+        --decision-file "$record" >/dev/null \
+        || fail "embedded pre-commit interruption did not accept the new observation"
+      show=$(tasks_in "$home" show "$id" --full)
+      assert_contains "$show" 'Use the west route instead.' \
+        "embedded pre-commit interruption did not commit the new observation"
+      position=$((position + 1))
+      continue
     fi
-    assert_grep 'newer captain reply' "$home/retry.err" \
-      "embedded stale retry at mutation position $position failed for the wrong reason"
-    after=$(shasum -a 256 "$home/data/backlog.md")
-    [ "$before" = "$after" ] \
-      || fail "embedded stale retry mutated backlog after interruption position $position"
+    FM_MUTATION_PROBE_MODE=interrupt run_probed_decisions "$home" resolve-item "$id" \
+      --decision-file "$record" > "$home/retry.out" 2> "$home/retry.err" \
+      || fail "embedded snapshot retry failed after interruption position $position"
+    show=$(tasks_in "$home" show "$id" --full)
+    assert_contains "$show" 'held: no' "embedded snapshot retry stayed held after position $position"
+    assert_contains "$show" 'Use the east route.' "embedded snapshot retry replaced the committed answer at position $position"
+    wake=$(FM_HOME="$home" "$RULING_CHECK") \
+      || fail "embedded post-commit revision check failed after position $position"
+    [ "$wake" = "captain-ruling-revision $id" ] \
+      || fail "embedded post-commit edit was not surfaced after position $position: $wake"
     position=$((position + 1))
   done
-
-  setup_embedded_ruling_home embedded-interruption-mutant "$id" 'Use the east route.'
-  home=$EMBEDDED_HOME
-  record="$home/data/decisions/$id.md"
-  printf '0\n' > "$home/mutation-count"
-  install_tasks_axi_call_probe "$home" interrupt
-  FM_MUTATION_FAIL_AT=1 run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null 2>&1 \
-    && fail "embedded mutant setup did not interrupt at the first mutation"
-  write_captain_reply "$home" "$id" 'Use the west route instead.'
-  mutant=$(falsified_ruling_commit "$home" embedded-cas-bypass)
-  rm "$home/fakebin/tasks-axi"
-  run_falsified_decisions "$home" "$mutant" resolve-item "$id" \
-    --decision-file "$record" >/dev/null 2>&1 \
-    || fail "embedded CAS-bypass mutant did not expose the stale unhold"
-  show=$(tasks_in "$home" show "$id" --full)
-  assert_contains "$show" 'held: no' \
-    "embedded property regression stayed green against the CAS-bypass mutant"
-  assert_contains "$show" 'Use the east route.' \
-    "embedded CAS-bypass mutant did not preserve the stale decision it accepted"
-  pass "every discovered ordinary-work mutation interruption refuses stale retry; CAS-bypass mutant unholds stale"
+  pass "every ordinary-work mutation interruption preserves the snapshot and surfaces a later edit"
 }
 
 write_pending_skeleton() {  # <home>
@@ -1251,7 +1368,7 @@ if [ "$before" != "$after" ]; then
   count=$(cat "$FM_HOME/mutation-count")
   next=$((count + 1))
   printf '%s\n' "$next" > "$FM_HOME/mutation-count"
-  if [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
+  if [ -n "${FM_MUTATION_FAIL_AT:-}" ] && [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
     exit 1
   fi
 fi
@@ -1521,21 +1638,22 @@ test_partial_retry_still_refuses_a_different_decision() {
 }
 
 test_ruling_wake_loads_the_single_lifecycle_owner() {
-  assert_grep 'on a `captain-ruling <hold-id>[,<hold-id>...]` `check:` wake' "$AGENTS" \
-    "AGENTS.md does not load the decision owner for captain-ruling wakes"
+  assert_grep 'on a `captain-ruling` or `captain-ruling-revision` `check:` wake' "$AGENTS" \
+    "AGENTS.md does not load the decision owner for ruling and revision wakes"
   for phrase in \
     'bin/fm-captain-ruling-check.sh --answer' \
     'data/decisions/<hold-id>.md' \
     'tasks-axi add' \
     '--blocked-by <hold-id>' \
     'bin/fm-decision-hold.sh resolve' \
+    'explicit revocation or retention' \
     'Only after `resolve` succeeds'; do
     assert_grep "$phrase" "$DECISION_SKILL" \
       "decision lifecycle owner is missing the round-trip instruction '$phrase'"
   done
   assert_grep 'A status change is not ruling ingestion' "$DECISION_SKILL" \
     "decision lifecycle owner permits a status-only close"
-  pass "captain-ruling wakes load the single lifecycle owner and preserve close ordering"
+  pass "ruling and revision wakes load the single lifecycle owner and preserve close ordering"
 }
 
 test_uninventoried_report_decision_refuses_completion
@@ -1555,10 +1673,11 @@ test_resolve_enforces_session_lock_and_stable_dependent_set
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
+test_revision_after_last_observation_commits_snapshot_and_becomes_new_decision
 test_unterminated_reply_never_routes_or_closes
 test_mutation_probe_is_verb_agnostic
-test_every_mutation_interruption_refuses_a_superseded_commit
-test_every_embedded_mutation_interruption_refuses_a_superseded_commit
+test_every_mutation_interruption_preserves_snapshot_and_surfaces_revision
+test_every_embedded_mutation_interruption_preserves_snapshot_and_surfaces_revision
 test_in_flight_captain_hold_resolves_end_to_end
 test_ordinary_work_decision_resolves_without_completing_work
 test_exact_retry_finishes_routing_without_revision

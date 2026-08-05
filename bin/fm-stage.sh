@@ -21,6 +21,8 @@
 # Duplicate and backward transitions are intentionally recorded without
 # rewriting history; a point-in-time consumer resolves the current stage as the
 # last valid record for that task in append order.
+# Each append is published by atomic replacement under a stable writer lock, so
+# a failed append leaves either the complete newline-terminated record or none.
 #
 # Usage:
 #   fm-stage.sh preflight
@@ -77,9 +79,10 @@ fm_stage_parse_record() {
 
 fm_stage_ledger_valid() {
   local line
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r line; do
     fm_stage_parse_record "$line" || return 1
   done < "$EVENTS"
+  [ -z "${line:-}" ]
 }
 
 fm_stage_require_readable_ledger() {

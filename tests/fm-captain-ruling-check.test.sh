@@ -613,6 +613,30 @@ EOF
   chmod 0600 "$log"
 }
 
+test_closed_commit_revision_wakes_and_remains_readable() {
+  local world home fakebin log old_digest out answer
+  world=$(make_home closed-revision); home=${world%%|*}; fakebin=${world#*|}
+  log="$home/state/captain-ruling-log.tsv"
+  old_digest=$(printf '%s' 'Keep the old route.' | shasum -a 256 | awk '{print $1}')
+  cat > "$home/data/captain-replies.md" <<'EOF'
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+closed-decision: Use the replacement route.
+<!-- END APPEND-ONLY: captain-replies -->
+EOF
+  printf 'REPLY\tclosed-decision\t%s\t-\nCOMMIT\tclosed-decision\t%s\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' \
+    "$old_digest" "$old_digest" > "$log"
+  chmod 0600 "$log"
+
+  out=$(run_check "$home" "$fakebin") || fail "closed revision detection failed"
+  [ "$out" = 'captain-ruling-revision closed-decision' ] \
+    || fail "closed committed ruling did not surface its edit as a revision: $out"
+  answer=$(read_answer "$home" "$fakebin" closed-decision) \
+    || fail "closed committed revision was not readable"
+  [ "$answer" = 'Use the replacement route.' ] \
+    || fail "closed committed revision returned the wrong answer: $answer"
+  pass "a post-COMMIT edit wakes as a readable new decision after the old hold closes"
+}
+
 install_ruling_watcher_check() {  # <home> <fakebin>
   local home=$1 fakebin=$2
   printf '%s\n' fm-pr-check-migration-scan-v1 > "$home/state/.pr-check-migration-scan-v1"
@@ -878,6 +902,7 @@ test_detection_dedupe_malformed_and_immutability
 test_detection_retries_until_durable_wake_is_acknowledged
 test_every_malformed_resolver_state_wakes_and_recovers_after_repair
 test_validator_storage_predicates_are_load_bearing
+test_closed_commit_revision_wakes_and_remains_readable
 test_persistent_queue_log_disagreement_wakes_once_without_mutation
 test_roll_forward_window_rechecks_before_waking
 test_settled_queue_and_commit_log_stay_silent

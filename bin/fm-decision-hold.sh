@@ -41,10 +41,11 @@
 # cannot close a hold that still owns undisclosed dependent work.
 # Direct concurrent backlog mutation is unsupported.
 # The command requires ownership of the home session lock and refuses if the blocked-dependent set changes between enumeration and the first mutation.
-# Reply ingestion and resolution share state/.captain-ruling-resolution.lock.
-# The resolver appends a COMMIT to the same ordered log as ingested REPLY records
-# before any backlog mutation. A newer REPLY makes a stale retry refuse, while an
-# unchanged last COMMIT permits idempotent roll-forward after interruption.
+# Reply ingestion and resolution share state/.captain-ruling-resolution.lock,
+# which serializes program processes but does not lock the captain's editor.
+# The resolver appends a snapshot COMMIT before any backlog mutation.
+# A later REPLY is a new decision, while the matching COMMIT remains available
+# for idempotent roll-forward after interruption.
 # It writes the captain decision and routed identities into a captain-kind hold,
 # clears those dependency edges, and only then marks that dedicated hold Done.
 # For a structured captain hold carried by ordinary work, resolve records the
@@ -192,8 +193,11 @@ commit_captain_ruling() {  # <hold-id> <decision-digest> <routed-csv>
   else
     rc=$?
   fi
+  if [ "$rc" -eq 3 ] && [ "$FM_RULING_COMMIT_CONFLICT" = committed ]; then
+    fail "captain hold $id already committed a different ruling; explicit revocation and a new decision identity are required"
+  fi
   [ "$rc" -ne 3 ] \
-    || fail "captain hold $id has a newer captain reply than the prepared decision record"
+    || fail "captain hold $id does not match the ruling observed at commit time"
   fail "captain ruling log is unavailable or malformed"
 }
 

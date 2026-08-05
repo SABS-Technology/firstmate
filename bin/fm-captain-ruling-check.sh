@@ -7,8 +7,8 @@
 # Detection is human: a fabricated data/decisions record will not match a ruling the captain remembers making.
 # The file remains a fallback because captain rulings normally arrive in chat or on Linear.
 # The program never writes the editor surface.
-# Under the ruling lock, complete `<id>: <answer>` lines are ingested into the
-# program-owned append log before detection or answer reads continue.
+# Under the program-process ruling lock, complete `<id>: <answer>` lines are
+# ingested as snapshots before detection or answer reads continue.
 # It accepts ids only while the canonical captain queue marks their structured
 # captain-kind record replyable, records only a digest of each seen id/answer
 # pair in state/.captain-rulings-seen only after the watcher durably appends the
@@ -21,7 +21,10 @@
 # It never changes captain-replies.md and never resolves a hold.
 # `--answer <id>` gives the handling agent the latest complete answer for one
 # still-open captain hold without exposing answer text in the watcher wake.
-# Reply detection and answer reads serialize with fm-decision-hold.sh resolve through the shared ruling-resolution lock.
+# A post-COMMIT edit emits `captain-ruling-revision <id>` even after the old hold
+# closes, so it becomes a new decision requiring explicit revocation.
+# Reply detection and answer reads serialize with fm-decision-hold.sh resolve,
+# but the captain-owned editor deliberately does not participate in that lock.
 #
 # `--install` atomically publishes the home-bound mode-0700 shim and binds its
 # bytes through fm-check-register.sh.
@@ -199,6 +202,7 @@ acknowledge_rulings() {
 
 detect_rulings() {
   local id answer answer_digest digest hashes='' ids='' candidates queue notification
+  local revision_hashes='' revision_ids=''
   local possible_disagreements='' disagreement_ids='' disagreement_hashes='' second_queue
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
   if ! fm_ruling_ingest; then
@@ -210,9 +214,21 @@ detect_rulings() {
   queue=$(captain_queue) || return 0
   while IFS=$'\t' read -r id answer; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
-    captain_hold_is_replyable "$id" "$queue" || continue
     answer_digest=$(fm_ruling_sha256 "$answer") || return 0
     fm_ruling_last_record "$id" || return 0
+    fm_ruling_committed_record "$id" || return 0
+    if [ "$FM_RULING_LAST_TYPE" = REPLY ] \
+      && [ "$FM_RULING_LAST_DECISION" = "$answer_digest" ] \
+      && [ -n "$FM_RULING_COMMITTED_DECISION" ]; then
+      digest=$(ruling_digest "$id" "$answer") || return 0
+      if ! { [ -f "$SEEN" ] && grep -Fqx "$digest" "$SEEN"; } \
+        && ! printf '%s' "$revision_hashes" | grep -Fqx "$digest"; then
+        revision_hashes="${revision_hashes}${digest}"$'\n'
+        case ",$revision_ids," in *",$id,"*) ;; *) revision_ids="${revision_ids:+$revision_ids,}$id" ;; esac
+      fi
+      continue
+    fi
+    captain_hold_is_replyable "$id" "$queue" || continue
     if [ "$FM_RULING_LAST_TYPE" = COMMIT ]; then
       case ",$possible_disagreements," in
         *",$id,"*) ;;
@@ -255,6 +271,12 @@ detect_rulings() {
     printf '%s\n' "$notification"
     return 0
   fi
+  if [ -n "$revision_ids" ]; then
+    notification="captain-ruling-revision $revision_ids"
+    publish_pending_ack "$notification" "$revision_hashes" || return 0
+    printf '%s\n' "$notification"
+    return 0
+  fi
   [ -n "$ids" ] || return 0
   notification="captain-ruling $ids"
   publish_pending_ack "$notification" "$hashes" || return 0
@@ -262,7 +284,7 @@ detect_rulings() {
 }
 
 answer_for_hold() {
-  local id=${1:-} answer queue
+  local id=${1:-} answer queue replyable=0
   [ "$#" -eq 1 ] || return 2
   fm_pr_task_id_valid "$id" || return 2
   [ -f "$REPLIES" ] && [ ! -L "$REPLIES" ] || {
@@ -273,14 +295,20 @@ answer_for_hold() {
     printf 'fm-captain-ruling-check: captain queue is unavailable\n' >&2
     return 1
   }
-  captain_hold_is_replyable "$id" "$queue" || {
-    printf 'fm-captain-ruling-check: captain hold is not replyable: %s\n' "$id" >&2
-    return 1
-  }
+  captain_hold_is_replyable "$id" "$queue" && replyable=1
   answer=$(fm_ruling_answer "$id") || {
     printf 'fm-captain-ruling-check: no complete answer for captain hold: %s\n' "$id" >&2
     return 1
   }
+  if [ "$replyable" != 1 ]; then
+    fm_ruling_last_record "$id" || return 1
+    fm_ruling_committed_record "$id" || return 1
+    if [ "$FM_RULING_LAST_TYPE" != REPLY ] \
+      || [ -z "$FM_RULING_COMMITTED_DECISION" ]; then
+      printf 'fm-captain-ruling-check: captain hold is not replyable: %s\n' "$id" >&2
+      return 1
+    fi
+  fi
   printf '%s\n' "$answer"
 }
 
