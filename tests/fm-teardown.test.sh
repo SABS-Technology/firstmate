@@ -59,7 +59,8 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
 REAL_GIT_FOR_TEST=$(command -v git)
-export REAL_GIT_FOR_TEST
+REAL_STAT_FOR_TEST=$(command -v stat)
+export REAL_GIT_FOR_TEST REAL_STAT_FOR_TEST
 
 # Build a fresh sandbox for one test case. Sets up:
 #   $CASE/state/        - firstmate state dir (with a fresh watcher beacon)
@@ -76,9 +77,10 @@ make_case() {
 
   # Mocks for the post-check teardown steps. Refuse logic exits before these
   # run; the ALLOW cases need them so the script can complete cleanly.
-  cat > "$fakebin/treehouse" <<'SH'
+cat > "$fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
 # `treehouse return --force <wt>`: succeed silently.
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
 exit 0
 SH
   cat > "$fakebin/tmux" <<'SH'
@@ -445,8 +447,13 @@ add_stat_error() {
   local case_dir=$1
   cat > "$case_dir/fakebin/stat" <<'SH'
 #!/usr/bin/env bash
-echo "stat: simulated failure" >&2
-exit 1
+case "${1:-} ${2:-}" in
+  '-f %m'|'-c %Y')
+    echo "stat: simulated mtime failure" >&2
+    exit 1
+    ;;
+esac
+exec "$REAL_STAT_FOR_TEST" "$@"
 SH
   chmod +x "$case_dir/fakebin/stat"
 }
@@ -493,6 +500,7 @@ run_teardown() {
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" task-x1 "$@"
 }
@@ -516,6 +524,40 @@ test_local_only_fork_remote_allows() {
   assert_absent "$case_dir/state/task-x1.meta" \
     "fork-allow: stage history survival must not retain task metadata"
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
+}
+
+test_corrupt_stage_ledger_refuses_before_cleanup_and_recovers() {
+  local case_dir ledger before rc
+  case_dir=$(make_case corrupt-stage-preflight)
+  write_meta "$case_dir" local-only ship
+  ledger="$case_dir/state/stage-transitions.tsv"
+  printf 'malformed-existing-row\n' > "$ledger"
+  chmod 0600 "$ledger"
+  before=$(shasum -a 256 "$case_dir/state/task-x1.meta")
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/corrupt.out" 2> "$case_dir/corrupt.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown cleaned up against a corrupt stage ledger"
+  assert_grep 'stage transition record is unavailable or malformed' "$case_dir/corrupt.err" \
+    "teardown stage refusal did not identify the corrupt ledger"
+  [ "$(shasum -a 256 "$case_dir/state/task-x1.meta")" = "$before" ] \
+    || fail "teardown changed task metadata before stage preflight"
+  assert_present "$case_dir/wt" "teardown returned the worktree before stage preflight"
+  assert_absent "$case_dir/treehouse.log" \
+    "teardown invoked irreversible worktree return before stage preflight"
+  [ "$(cat "$ledger")" = 'malformed-existing-row' ] \
+    || fail "teardown stage preflight changed the corrupt ledger"
+
+  : > "$ledger"
+  run_teardown "$case_dir" --force >/dev/null 2>&1 \
+    || fail "teardown did not recover after explicit stage-ledger repair"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "successful teardown retained task metadata after complete emission"
+  [ "$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" current task-x1)" = complete ] \
+    || fail "recovered teardown did not retain its complete transition"
+  pass "teardown preflights stage state, preserves retry identity, and recovers after repair"
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {
@@ -1408,6 +1450,7 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
 }
 
 test_local_only_fork_remote_allows
+test_corrupt_stage_ledger_refuses_before_cleanup_and_recovers
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses

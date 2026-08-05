@@ -49,7 +49,10 @@ case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
-  send-keys) exit 0 ;;
+  send-keys)
+    [ -z "${FM_FAKE_SEND_KEYS_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_SEND_KEYS_LOG"
+    exit 0
+    ;;
 esac
 exit 0
 SH
@@ -97,6 +100,7 @@ run_settle_spawn() {
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
+    FM_FAKE_SEND_KEYS_LOG="$HOME_DIR/send-keys.log" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" "$@" 2>&1
 }
@@ -161,8 +165,32 @@ test_scout_spawn_emits_investigation() {
   pass "a scout spawn enters investigation rather than implementation"
 }
 
+test_corrupt_stage_ledger_refuses_before_agent_launch() {
+  local rec id out status ledger
+  id=settle-corrupt-stage-z4
+  rec=$(make_settle_case settle-corrupt-stage "$id" 0)
+  read_settle_record "$rec"
+  ledger="$HOME_DIR/state/stage-transitions.tsv"
+  printf 'malformed-existing-row\n' > "$ledger"
+  chmod 0600 "$ledger"
+
+  set +e
+  out=$(run_settle_spawn "$id")
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "spawn launched against a corrupt stage ledger"
+  assert_contains "$out" 'stage transition record is unavailable or malformed' \
+    "spawn stage refusal did not identify the corrupt ledger"
+  assert_no_grep 'export GOTMPDIR=' "$HOME_DIR/send-keys.log" \
+    "spawn sent agent launch input before preflighting the stage ledger"
+  [ "$(cat "$ledger")" = 'malformed-existing-row' ] \
+    || fail "spawn stage preflight changed the corrupt ledger"
+  pass "corrupt stage state refuses spawn before any agent launch input"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
 test_scout_spawn_emits_investigation
+test_corrupt_stage_ledger_refuses_before_agent_launch
 
 echo "# all fm-spawn-worktree-settle tests passed"

@@ -23,6 +23,7 @@
 # last valid record for that task in append order.
 #
 # Usage:
+#   fm-stage.sh preflight
 #   fm-stage.sh emit <task-id> <stage>
 #   fm-stage.sh current <task-id>
 #   fm-stage.sh history <task-id>
@@ -89,6 +90,17 @@ fm_stage_require_readable_ledger() {
   fm_stage_ledger_valid
 }
 
+fm_stage_preflight() {
+  local state_device
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
+  state_device=$(fm_pr_file_device "$STATE") || return 1
+  if [ ! -e "$EVENTS" ] && [ ! -L "$EVENTS" ]; then
+    fm_pr_regular_destination_on_device_or_absent "$EVENTS" "$state_device"
+    return
+  fi
+  fm_pr_private_file_valid "$EVENTS" 600 "$state_device" && fm_stage_ledger_valid
+}
+
 fm_stage_emit() {
   local task=$1 stage=$2 at state_device record
   if ! fm_task_id_path_safe "$task" || ! fm_stage_valid "$stage"; then
@@ -101,6 +113,10 @@ fm_stage_emit() {
   }
   state_device=$(fm_pr_file_device "$STATE") || {
     echo "error: stage state directory is unavailable" >&2
+    return 1
+  }
+  fm_stage_preflight || {
+    echo "error: stage transition record is unavailable or malformed" >&2
     return 1
   }
   at=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 1
@@ -143,6 +159,13 @@ case "${1:-}" in
   stages)
     [ "$#" -eq 1 ] || { echo "error: invalid stage request" >&2; exit 2; }
     printf '%s\n' implementation investigation validation pr-open merged complete
+    ;;
+  preflight)
+    [ "$#" -eq 1 ] || { echo "error: invalid stage request" >&2; exit 2; }
+    fm_stage_preflight || {
+      echo "error: stage transition record is unavailable or malformed" >&2
+      exit 1
+    }
     ;;
   emit)
     [ "$#" -eq 3 ] || { echo "error: invalid stage request" >&2; exit 2; }
