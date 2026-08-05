@@ -37,11 +37,12 @@
 # gate-response policy; the installed no-mistakes skill and live axi help own
 # version-specific mechanics. Other scaffold variants omit that policy.
 # Every ship brief embeds the claim-proof discipline: falsifying mutations validate
-# only checks already in scope, while broader defect-class generalizations that no
-# listed finding covers are recorded and escalated without expanding the round. Its gate-response
+# only checks already in scope, while broader defect-class generalizations are
+# recorded and escalated without expanding the round. Its listed-finding carve-out, its
 # reconciliation and its durable known-open surface are mode-conditional: only
-# no-mistakes briefs cite those rules by number, and each mode names the surface
-# it actually produces.
+# no-mistakes briefs have a review gate, so only they exempt a listed finding's own
+# defect class from that escalation and cite those gate-response rules by number,
+# and each mode names the surface it actually produces.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Ship and scout briefs carry a "## Pre-flight decisions" section under the task:
@@ -325,12 +326,20 @@ read -r MODE _ <<EOF
 $("$FM_ROOT/bin/fm-project-mode.sh" "$REPO")
 EOF
 
+# Claim-proof item 2 is mode-conditional: only no-mistakes briefs run against a
+# review gate that lists findings, so only they carve a listed finding's own
+# defect class out of the escalate-do-not-fix rule. Modes with no gate, no
+# findings, and no rounds keep the flat boundary.
+CLAIM_CLASS_ITEM_UNGATED='2. If an in-scope fix reveals the same defect class beyond the requested instance, name the generalization and escalate it to firstmate.
+   Do not fix that generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.'
+
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, or cannot be closed within the requested instance, record it in the PR body as known-open before \`done\` - never pane-only output."
     CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
+    CLAIM_CLASS_ITEM="$CLAIM_CLASS_ITEM_UNGATED"
     DOD=$(cat <<EOF
 # Definition of done
 This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
@@ -345,6 +354,7 @@ EOF
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     CLAIM_ESCAPE_LATE="   If one surfaces too late to close in scope, or cannot be closed within the requested instance, record it in your branch commit message as known-open before \`done\` - never pane-only output."
     CLAIM_SCOPE_NOTE='Neither rule widens the task: escape testing validates an already-scoped fix, and naming a generalization authorizes no follow-up fixing or scope growth.'
+    CLAIM_CLASS_ITEM="$CLAIM_CLASS_ITEM_UNGATED"
     DOD=$(cat <<EOF
 # Definition of done
 This project ships **local-only**: no remote, no PR, no pipeline.
@@ -361,6 +371,9 @@ EOF
     RULE1='1. Never push to the default branch. Never merge a PR.'
     CLAIM_ESCAPE_LATE="   Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop closing escapes and record it in the PR body as known-open before \`done\` - never pane-only output."
     CLAIM_SCOPE_NOTE='Both preserve the validation gate-response contract below: escape testing validates only an already-scoped fix and adds no finding or surface (rule 3), and naming an unlisted generalization authorizes no follow-up fixing or scope growth into an unrelated defect class or unrelated surface (rule 5). The defect class a listed finding belongs to is never such a generalization - rule 5 requires you to close that class in the same round, so escalating it instead of closing it is the instance-only closure rule 5 forbids.'
+    CLAIM_CLASS_ITEM='2. If an in-scope fix reveals the same defect class beyond the requested instance, and no listed review finding covers that class, name the generalization and escalate it to firstmate.
+   Do not fix that unlisted generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.
+   A defect class that a listed finding does belong to is not this case: it stays in the round and you close it there.'
     DOD=$(cat <<EOF
 # Definition of done
 The task is complete only when committed on your branch.
@@ -384,6 +397,8 @@ This keeps each review round focused, bounded, and security-safe.
    Close the full defect class each listed finding belongs to; closing only the listed instances is an incomplete fix, not a bounded one.
    When a finding reads as one instance of a broader class, name the class you believe it belongs to in your gate response and state the class you are closing.
    Include other instances and directly required surfaces needed to close that class.
+   Rules 2 and 3 bound which of them are fix-eligible and take precedence over this rule: a same-class instance they defer stays a follow-up, and closing the class within that boundary is a complete fix, not an instance-only one.
+   One exception, and you never decide it alone: when deferring a same-class instance would defeat the purpose of the change - the guard would not guard, the rule would not bind, or the fix would not fix - name it in your gate response as a purpose-defeating deferral and escalate it to firstmate instead of silently filing a follow-up. Firstmate rules whether it is fixed in-round. Severity grades quality, not whether the thing under construction works.
    Do not expand the round into an unrelated defect class or unrelated surface; report either as a follow-up candidate.
 6. A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.
    If unsure whether an issue clears this bar, escalate to firstmate.
@@ -453,9 +468,7 @@ $RULE1
 1. For each added or changed check meant to prove a claim, name and execute the smallest edits that make the claim false.
    While implementing, close any falsifying edit the check leaves green.
 $CLAIM_ESCAPE_LATE
-2. If an in-scope fix reveals the same defect class beyond the requested instance, and no listed review finding covers that class, name the generalization and escalate it to firstmate.
-   Do not fix that unlisted generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.
-   A defect class that a listed finding does belong to is not this case: it stays in the round and you close it there.
+$CLAIM_CLASS_ITEM
 $CLAIM_SCOPE_NOTE
 
 # Project memory
