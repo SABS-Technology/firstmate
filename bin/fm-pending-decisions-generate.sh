@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Generate data/pending-decisions.md from the canonical captain queue.
 #
+# This file is a generated, captain-read-only projection.
+# Captain answers belong in data/captain-replies.md, which this program never writes.
 # An absent target is atomically initialized with each marker exactly once on its own line:
 #   <!-- BEGIN GENERATED: captain-queue -->
 #   <!-- END GENERATED: captain-queue -->
-#   <!-- BEGIN APPEND-ONLY: captain-replies -->
-#   <!-- END APPEND-ONLY: captain-replies -->
+#   <!-- BEGIN GENERATED: captain-reply-template -->
+#   <!-- END GENERATED: captain-reply-template -->
 # A present target must already contain the same four-marker scaffold.
-# The captain-queue region is replaced atomically from fm-captain-queue.sh
-# --json. Everything outside it is copied byte-for-byte, except that missing
-# `<hold-task-id>: ` prefixes are appended to the captain-replies region.
-# Existing reply-zone bytes are never removed, reordered, or rewritten.
+# Both regions and all surrounding prose are atomically regenerated from
+# fm-captain-queue.sh --json. No captain-owned bytes live in this file.
 #
 # Stable human labels are retained as generated mapping records:
 #   <!-- captain-decision: D4 backing-hold-task-id -->
@@ -30,8 +30,8 @@ TARGET="${FM_PENDING_DECISIONS_OVERRIDE:-$FM_HOME/data/pending-decisions.md}"
 DATA_DIR=$(dirname "$TARGET")
 QUEUE_BEGIN='<!-- BEGIN GENERATED: captain-queue -->'
 QUEUE_END='<!-- END GENERATED: captain-queue -->'
-REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
-REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
+REPLY_BEGIN='<!-- BEGIN GENERATED: captain-reply-template -->'
+REPLY_END='<!-- END GENERATED: captain-reply-template -->'
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 usage() {
@@ -86,7 +86,6 @@ fi
 target_device=$(fm_pr_file_device "$TARGET") || fail "target is unavailable"
 [ "$data_device" = "$target_device" ] || fail "target is on a different device"
 target_mode=$(fm_pr_file_mode "$TARGET") || fail "target mode is unavailable"
-target_identity=$(fm_pr_file_identity "$TARGET") || fail "target identity is unavailable"
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-pending-decisions.XXXXXX") \
   || fail "temporary workspace is unavailable"
 ORIGINAL="$TMP_DIR/original.md"
@@ -98,7 +97,7 @@ QUEUE_IDS="$TMP_DIR/queue.ids"
 REPLYABLE_IDS="$TMP_DIR/replyable.ids"
 LABELS_JSON="$TMP_DIR/labels.json"
 NEW_GENERATED="$TMP_DIR/new-generated.md"
-ADDITIONS="$TMP_DIR/reply-additions.md"
+REPLY_TEMPLATE="$TMP_DIR/reply-template.md"
 CANDIDATE="$TMP_DIR/candidate.md"
 perl - "$TARGET" "$ORIGINAL" "$CURRENT_GENERATED" "$CURRENT_REPLIES" \
   "$QUEUE_BEGIN" "$QUEUE_END" "$REPLY_BEGIN" "$REPLY_END" <<'PERL'
@@ -130,7 +129,7 @@ for my $raw (split /(?<=\n)/, $data) {
     next;
   }
   if (index($line, 'GENERATED: captain-queue') >= 0
-      || index($line, 'APPEND-ONLY: captain-replies') >= 0) {
+      || index($line, 'GENERATED: captain-reply-template') >= 0) {
     refuse("malformed marker: $line");
   }
 }
@@ -272,33 +271,25 @@ jq -r --slurpfile labels "$LABELS_JSON" '
     ]
   | join("\n\n") + "\n"
 ' "$QUEUE_JSON" >> "$NEW_GENERATED"
-perl - "$CURRENT_REPLIES" "$REPLYABLE_IDS" "$ADDITIONS" <<'PERL'
+perl - "$REPLYABLE_IDS" "$REPLY_TEMPLATE" <<'PERL'
 use strict;
 use warnings;
-my ($replies_path, $ids_path, $output_path) = @ARGV;
-open my $replies_fh, '<:raw', $replies_path or die "reply extraction unavailable\n";
-my $replies;
-{
-  local $/;
-  $replies = <$replies_fh>;
-}
-close $replies_fh or die "reply extraction unavailable\n";
+my ($ids_path, $output_path) = @ARGV;
 open my $ids_fh, '<:raw', $ids_path or die "reply ids unavailable\n";
-open my $output, '>:raw', $output_path or die "reply additions unavailable\n";
+open my $output, '>:raw', $output_path or die "reply template unavailable\n";
 while (my $id = <$ids_fh>) {
   chomp $id;
   next if $id eq '';
-  next if $replies =~ /(?:\A|\n)[ \t]*\Q$id\E[ \t]*:/;
-  print {$output} "$id: \n" or die "reply additions unavailable\n";
+  print {$output} "$id: <answer>\n" or die "reply template unavailable\n";
 }
 close $ids_fh or die "reply ids unavailable\n";
-close $output or die "reply additions unavailable\n";
+close $output or die "reply template unavailable\n";
 PERL
-perl - "$ORIGINAL" "$NEW_GENERATED" "$ADDITIONS" "$CANDIDATE" \
+perl - "$NEW_GENERATED" "$REPLY_TEMPLATE" "$CANDIDATE" \
   "$QUEUE_BEGIN" "$QUEUE_END" "$REPLY_BEGIN" "$REPLY_END" <<'PERL'
 use strict;
 use warnings;
-my ($original_path, $generated_path, $additions_path, $output_path,
+my ($generated_path, $replies_path, $output_path,
     $qb, $qe, $rb, $re) = @ARGV;
 sub read_raw {
   open my $fh, '<:raw', $_[0] or die "candidate input unavailable\n";
@@ -307,30 +298,12 @@ sub read_raw {
   close $fh or die "candidate input unavailable\n";
   return $value;
 }
-sub replace_region {
-  my ($data_ref, $begin, $end, $replacement) = @_;
-  my $start = index($$data_ref, "$begin\n");
-  die "validated marker disappeared\n" if $start < 0;
-  $start += length($begin) + 1;
-  my $finish = index($$data_ref, $end, $start);
-  die "validated marker disappeared\n" if $finish < 0;
-  substr($$data_ref, $start, $finish - $start, $replacement);
-}
-my $data = read_raw($original_path);
 my $generated = read_raw($generated_path);
-my $additions = read_raw($additions_path);
-replace_region(\$data, $qb, $qe, $generated);
-my $reply_start = index($data, "$rb\n");
-die "validated reply marker disappeared\n" if $reply_start < 0;
-$reply_start += length($rb) + 1;
-my $reply_finish = index($data, $re, $reply_start);
-die "validated reply marker disappeared\n" if $reply_finish < 0;
-my $replies = substr($data, $reply_start, $reply_finish - $reply_start);
-if ($additions ne '') {
-  $replies .= "\n" if $replies ne '' && $replies !~ /\n\z/;
-  $replies .= $additions;
-}
-substr($data, $reply_start, $reply_finish - $reply_start, $replies);
+my $replies = read_raw($replies_path);
+my $data = "# Captain decisions\n\n"
+  . "> Generated by fm-pending-decisions-generate.sh. Do not edit this file.\n\n"
+  . "To answer outside chat, copy one line below into `data/captain-replies.md` and replace `<answer>`.\n\n"
+  . "$rb\n$replies$re\n\n$qb\n$generated$qe\n";
 open my $output, '>:raw', $output_path or die "candidate output unavailable\n";
 print {$output} $data or die "candidate output unavailable\n";
 close $output or die "candidate output unavailable\n";
@@ -338,10 +311,6 @@ PERL
 if cmp -s "$ORIGINAL" "$CANDIDATE"; then
   printf 'pending-decisions: unchanged\n'
   exit 0
-fi
-if [ "$(fm_pr_file_identity "$TARGET")" != "$target_identity" ] \
-  || ! cmp -s "$TARGET" "$ORIGINAL"; then
-  fail "target changed during generation; refusing to overwrite captain input"
 fi
 fm_pr_regular_destination_on_device_or_absent "$TARGET" "$data_device" \
   || fail "target became unsafe during generation"
@@ -353,11 +322,8 @@ if ! cp "$CANDIDATE" "$PUBLISH_TMP" \
   || ! fm_pr_private_file_valid "$PUBLISH_TMP" "$target_mode" "$data_device"; then
   fail "atomic target preparation failed"
 fi
-if [ "$(fm_pr_file_identity "$TARGET")" != "$target_identity" ] \
-  || ! cmp -s "$TARGET" "$ORIGINAL" \
-  || ! fm_pr_regular_destination_on_device_or_absent "$TARGET" "$data_device"; then
-  fail "target changed during generation; refusing to overwrite captain input"
-fi
+fm_pr_regular_destination_on_device_or_absent "$TARGET" "$data_device" \
+  || fail "target became unsafe during generation"
 mv -f -- "$PUBLISH_TMP" "$TARGET" || fail "atomic target publication failed"
 PUBLISH_TMP=
 count=$(jq -r '.count' "$QUEUE_JSON")

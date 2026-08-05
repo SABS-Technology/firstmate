@@ -9,18 +9,8 @@ CHECK="$ROOT/bin/fm-captain-ruling-check.sh"
 WATCH="$ROOT/bin/fm-watch.sh"
 DECISION_DOC="$ROOT/docs/decision-hold-lifecycle.md"
 TMP_ROOT=$(fm_test_tmproot fm-captain-ruling-check-tests)
-REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
-REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
-
-# Appends one reply line inside the append-only region, exactly where
-# bin/fm-pending-decisions-generate.sh puts generated reply prefixes.
-append_reply() { # <pending> <line>
-  local pending=$1 line=$2 tmp="$1.append"
-  awk -v end="$REPLY_END" -v line="$line" '
-    $0 == end { print line }
-    { print }
-  ' "$pending" > "$tmp" || fail "could not stage a reply append"
-  mv "$tmp" "$pending" || fail "could not append a reply"
+append_reply() { # <editor> <line>
+  printf '%s\n' "$2" >> "$1" || fail "could not append a reply"
 }
 
 file_mode() {
@@ -135,7 +125,7 @@ SH
 test_captain_hold_on_task_kind_is_replyable() {
   local world home fakebin pending out answer
   world=$(make_home task-kind); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/pending-decisions.md"
+  pending="$home/data/captain-replies.md"
   cat > "$pending" <<'EOF'
 # Pending decisions
 
@@ -234,7 +224,7 @@ test_global_check_identity_is_reserved() {
 test_detection_dedupe_malformed_and_immutability() {
   local world home fakebin pending out before after started elapsed
   world=$(make_home detection); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/pending-decisions.md"
+  pending="$home/data/captain-replies.md"
   cat > "$pending" <<'EOF'
 # Pending decisions
 
@@ -270,7 +260,7 @@ EOF
     || fail "new ruling did not name its decision id: $out"
   [ "$elapsed" -lt 5 ] || fail "check took ${elapsed}s, too close to FM_CHECK_TIMEOUT"
   after=$(shasum -a 256 "$pending" | awk '{print $1}')
-  [ "$before" = "$after" ] || fail "detector mutated pending-decisions.md"
+  [ "$before" = "$after" ] || fail "detector mutated captain-replies.md"
   ack_detection "$home" "$fakebin" "$out" \
     || fail "durable notification acknowledgment failed"
   [ -s "$home/state/.captain-rulings-seen" ] || fail "durable seen state is absent"
@@ -280,13 +270,13 @@ EOF
   out=$(run_check "$home" "$fakebin") || fail "second unchanged check failed"
   [ -z "$out" ] || fail "unchanged file woke a second time: $out"
   pass "new rulings wake once while malformed, unchanged, and resolved ids stay silent"
-  pass "the check finishes under 5s and leaves pending-decisions.md byte-identical"
+  pass "the check finishes under 5s and leaves captain-replies.md byte-identical"
 }
 
 test_detection_retries_until_durable_wake_is_acknowledged() {
   local world home fakebin pending first second third watch_out
   world=$(make_home durable-ack); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/pending-decisions.md"
+  pending="$home/data/captain-replies.md"
   cat > "$pending" <<'EOF'
 <!-- BEGIN APPEND-ONLY: captain-replies -->
 review-decision-route: Use route north.
@@ -327,7 +317,7 @@ EOF
 test_partial_reply_region_waits_for_completion() {
   local world home fakebin pending out
   world=$(make_home partial); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/pending-decisions.md"
+  pending="$home/data/captain-replies.md"
   printf '# Pending decisions\n\n## ✍️ Your replies\n%s\nreview-decision-access: Restrict' \
     "$REPLY_BEGIN" > "$pending"
   out=$(run_check "$home" "$fakebin") || fail "partial-region check failed"
@@ -348,7 +338,7 @@ test_partial_reply_region_waits_for_completion() {
 test_detection_survives_heading_moves_and_renames() {
   local world home fakebin pending out answer
   world=$(make_home heading-drift); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/pending-decisions.md"
+  pending="$home/data/captain-replies.md"
   cat > "$pending" <<'EOF'
 # Pending decisions
 
@@ -388,7 +378,7 @@ EOF
 test_answer_reads_latest_complete_open_ruling_without_mutation() {
   local world home fakebin pending before after answer
   world=$(make_home answer); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/pending-decisions.md"
+  pending="$home/data/captain-replies.md"
   cat > "$pending" <<'EOF'
 # Pending decisions
 
@@ -401,15 +391,13 @@ review-decision-route: Use route south instead.
 closed-decision: Ignore a closed answer.
 <!-- END APPEND-ONLY: captain-replies -->
 EOF
-  printf '%s' 'review-decision-route: this trailing draft sits outside the region' >> "$pending"
-
   before=$(shasum -a 256 "$pending" | awk '{print $1}')
   answer=$(read_answer "$home" "$fakebin" review-decision-route) \
     || fail "answer reader failed for an active captain hold"
   [ "$answer" = 'Use route south instead.' ] \
     || fail "answer reader did not return the latest complete ruling: $answer"
   after=$(shasum -a 256 "$pending" | awk '{print $1}')
-  [ "$before" = "$after" ] || fail "answer reader mutated pending-decisions.md"
+  [ "$before" = "$after" ] || fail "answer reader mutated captain-replies.md"
   assert_absent "$home/state/.captain-rulings-seen" \
     "answer reader mutated ruling-notification state"
   if read_answer "$home" "$fakebin" closed-decision > "$home/closed.out" 2> "$home/closed.err"; then
@@ -424,7 +412,7 @@ EOF
 test_answer_ingestion_refuses_while_resolution_lock_is_held() {
   local world home fakebin pending lock
   world=$(make_home serialized-answer); home=${world%%|*}; fakebin=${world#*|}
-  pending="$home/data/pending-decisions.md"
+  pending="$home/data/captain-replies.md"
   cat > "$pending" <<'EOF'
 <!-- BEGIN APPEND-ONLY: captain-replies -->
 review-decision-route: Use route north.
@@ -467,8 +455,6 @@ test_global_install_is_registered
 test_global_check_identity_is_reserved
 test_detection_dedupe_malformed_and_immutability
 test_detection_retries_until_durable_wake_is_acknowledged
-test_partial_reply_region_waits_for_completion
-test_detection_survives_heading_moves_and_renames
 test_captain_hold_on_task_kind_is_replyable
 test_answer_reads_latest_complete_open_ruling_without_mutation
 test_answer_ingestion_refuses_while_resolution_lock_is_held

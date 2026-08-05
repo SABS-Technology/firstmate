@@ -28,19 +28,17 @@ It enumerates the active home's blocked work through `tasks-axi list --blocked` 
 It requires the canonical regular `data/decisions/<hold-id>.md` record and verifies that every routed task's durable body or brief points to that exact path before any mutation.
 It requires ownership of the home session lock because direct concurrent backlog mutation is unsupported.
 It enumerates blocked dependents again before the first write and refuses if that inventory changed.
-It re-reads the captain's current reply through `bin/fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the prepared decision record.
 Reply ingestion and resolution serialize through one scoped ruling-resolution lock.
-The resolver carries one ruling revision through the hold-body write, every dependency unblock, and hold closure.
-It compares that revision after each mutation and rolls back its body, released edges, and hold state before refusing when a lock-bypassing writer changes the ruling during the window.
-These checks only refuse and never supply decision text.
+The detector ingests captain-owned `data/captain-replies.md` snapshots as ordered REPLY digests in `state/captain-ruling-log.tsv`.
+The resolver appends a matching COMMIT to that same log before its first backlog mutation and refuses when a newer REPLY is last.
+An unchanged last COMMIT permits idempotent roll-forward after interruption, while a revised reply makes the stale retry refuse before any further mutation.
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 
 The `resolve-item` subcommand handles a captain hold carried by ordinary work.
-It requires the canonical `data/decisions/<hold-id>.md` record, verifies the current answer under the same ruling-resolution lock, records the decision digest and pointer on the existing work item, and clears only the captain hold.
+It requires the canonical `data/decisions/<hold-id>.md` record, commits its matching reply under the same ruling-resolution lock, records the decision digest and pointer on the existing work item, and clears only the captain hold.
 It accepts no routed identities and contains no task-completion path, so resolving the decision cannot complete the underlying work or release dependencies that represent completion of that work.
-Such a retry skips the captain re-read, because the hold body already carries that exact decision and the retry only finishes committing it; a reply revised after the commit therefore cannot strand a half-routed hold, and a genuinely different decision is still rejected by the retry identity record.
-A failed intermediate step leaves the hold open.
+Such a retry rolls forward only while the same COMMIT remains last in the ruling log.
 
 ## Accepted local ruling threat model
 
@@ -52,8 +50,8 @@ Captain rulings normally arrive in chat or Linear.
 The queue file is only a fallback and does not become the primary ruling path.
 
 `bin/fm-captain-ruling-check.sh` emits only privacy-safe hold identities from its watcher path.
-It reads replies from the same `<!-- BEGIN/END APPEND-ONLY: captain-replies -->` region that `bin/fm-pending-decisions-generate.sh` appends reply prefixes to, so the captain can rename, move, or rewrite the surrounding headings and prose without silencing detection, and a missing or malformed marker pair yields no candidates instead of a partial scan.
-Its explicit `--answer <hold-id>` read returns the latest complete answer only while that captain hold is still open and leaves `data/pending-decisions.md` unchanged.
+It reads complete `<hold-id>: <answer>` lines from captain-owned `data/captain-replies.md`, atomically ingests new answer digests into the program log, and never writes the editor surface.
+Its explicit `--answer <hold-id>` read returns the latest ingested complete answer only while that captain hold is still open.
 On that wake, the lifecycle skill owns the semantic agent turn: it writes the exact answer to `data/decisions/<hold-id>.md`, then selects `resolve` for a dedicated captain-kind hold or `resolve-item` for a hold carried by ordinary work.
 The guarded resolver remains the only decision-resolution path, so a status-only change, missing work item, or missing dependency edge cannot close a dedicated captain decision or complete ordinary work.
 
@@ -102,19 +100,17 @@ ok - resolve requires the canonical record and exact routed-work pointer
 ok - resolve requires its session lock and refuses a changed dependent set
 ok - resolve discovers every still-blocked dependent and refuses an undisclosed one
 ok - resolve re-reads the captain ruling and refuses a superseded decision record
-ok - ruling revision CAS covers the body write, dependency unblock, and close window
+ok - every discovered mutation interruption refuses stale retry; CAS-bypass mutant closes stale
 ok - in-flight captain holds generate, wake, read, record, route, and resolve
 ok - ordinary-kind replies resolve only the captain hold and never complete the work item
-ok - an exact retry finishes routing a committed decision after a revised reply
+ok - an exact retry finishes routing a committed decision when no reply changed
 ok - a partial-resolve retry carrying a different decision is still refused
 ok - captain-ruling wakes load the single lifecycle owner and preserve close ordering
 
 $ bash tests/fm-captain-ruling-check.test.sh
 ok - one private single-link global check is registered
 ok - new rulings wake once while malformed, unchanged, and resolved ids stay silent
-ok - the check finishes under 5s and leaves pending-decisions.md byte-identical
-ok - a half-written or malformed reply region waits until the markers close it
-ok - detection follows the append-only markers, not any heading
+ok - the check finishes under 5s and leaves captain-replies.md byte-identical
 ok - active captain holds are accepted on any task kind while other holds stay silent
 ok - answer reader returns the latest complete open ruling without changing captain input
 ok - reply ingestion serializes with active ruling resolution

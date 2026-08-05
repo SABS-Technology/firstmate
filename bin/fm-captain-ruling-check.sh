@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
-# Detect captain rulings written into data/pending-decisions.md.
+# Detect captain rulings written into captain-owned data/captain-replies.md.
 #
 # With no arguments, this is the tracked target of the one global registered
 # watcher check at state/captain-ruling.check.sh, but the file-backed ruling channel is not authenticated.
 # Under the accepted single-user threat model, a compromised local process can fabricate a ruling because it already runs as the captain's UID and can modify tracked scripts directly.
 # Detection is human: a fabricated data/decisions record will not match a ruling the captain remembers making.
-# The queue file remains a fallback because captain rulings normally arrive in chat or on Linear.
-# It scans only complete `<id>: <answer>` lines inside the same
-# `<!-- BEGIN/END APPEND-ONLY: captain-replies -->` region that
-# fm-pending-decisions-generate.sh appends reply prefixes to, so captain edits
-# to surrounding prose or headings can never silence detection. A missing,
-# duplicated, or malformed marker pair yields no candidates at all.
+# The file remains a fallback because captain rulings normally arrive in chat or on Linear.
+# The program never writes the editor surface.
+# Under the ruling lock, complete `<id>: <answer>` lines are ingested into the
+# program-owned append log before detection or answer reads continue.
 # It accepts ids only while the canonical captain queue marks their structured
 # captain-kind record replyable, records only a digest of each seen id/answer
 # pair in state/.captain-rulings-seen only after the watcher durably appends the
 # matching wake, and prints one
 # `captain-ruling <id>[,<id>...]` line when a new ruling needs an agent turn.
-# It never changes pending-decisions.md and never resolves a hold.
+# It never changes captain-replies.md and never resolves a hold.
 # `--answer <id>` gives the handling agent the latest complete answer for one
 # still-open captain hold without exposing answer text in the watcher wake.
 # Reply detection and answer reads serialize with fm-decision-hold.sh resolve through the shared ruling-resolution lock.
@@ -33,19 +31,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-PENDING="${FM_PENDING_DECISIONS_OVERRIDE:-$FM_HOME/data/pending-decisions.md}"
+REPLIES="${FM_CAPTAIN_REPLIES_OVERRIDE:-$FM_HOME/data/captain-replies.md}"
 CHECK_ID=captain-ruling
 CHECK="$STATE/$CHECK_ID.check.sh"
 SEEN="$STATE/.captain-rulings-seen"
 PENDING_ACK="$STATE/.captain-ruling-pending-ack"
-REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
-REPLY_END='<!-- END APPEND-ONLY: captain-replies -->'
-REPLY_MARKER_TEXT='APPEND-ONLY: captain-replies'
 CAPTAIN_QUEUE="$SCRIPT_DIR/fm-captain-queue.sh"
 RULING_LOCK="$STATE/.captain-ruling-resolution.lock"
 
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-captain-ruling-log-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-captain-ruling-log-lib.sh"
 # shellcheck source=bin/fm-check-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-check-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh disable=SC1091
@@ -112,33 +109,8 @@ captain_hold_is_replyable() {  # <hold-id> <queue-json>
   ' >/dev/null <<< "$2"
 }
 
-reply_region() {
-  awk -v begin="$REPLY_BEGIN" -v end="$REPLY_END" -v text="$REPLY_MARKER_TEXT" '
-    { line = $0; sub(/\r$/, "", line) }
-    line == begin { begins++; if (begins == 1 && ends == 0) inside = 1; next }
-    line == end { ends++; inside = 0; next }
-    index(line, text) { malformed = 1; next }
-    inside { print line }
-    END { if (malformed || begins != 1 || ends != 1) exit 3 }
-  ' "$PENDING"
-}
-
 reply_candidates() {
-  local line id answer region
-  region=$(reply_region) || return 0
-  [ -n "$region" ] || return 0
-  while IFS= read -r line; do
-    case "$line" in *:*) ;; *) continue ;; esac
-    id=${line%%:*}
-    answer=${line#*:}
-    id=${id#"${id%%[![:space:]]*}"}
-    id=${id%"${id##*[![:space:]]}"}
-    answer=${answer#"${answer%%[![:space:]]*}"}
-    answer=${answer%"${answer##*[![:space:]]}"}
-    fm_pr_task_id_valid "$id" || continue
-    case "$answer" in ''|'<answer>'|'[answer]') continue ;; esac
-    printf '%s\t%s\n' "$id" "$answer"
-  done <<< "$region"
+  fm_ruling_reply_candidates
 }
 
 ruling_digest() {
@@ -205,15 +177,19 @@ acknowledge_rulings() {
 }
 
 detect_rulings() {
-  local id answer digest hashes='' ids='' candidates queue
-  [ -f "$PENDING" ] && [ ! -L "$PENDING" ] || return 0
+  local id answer answer_digest digest hashes='' ids='' candidates queue
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
+  fm_ruling_ingest || return 0
   candidates=$(reply_candidates)
   [ -n "$candidates" ] || return 0
   queue=$(captain_queue) || return 0
   while IFS=$'\t' read -r id answer; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
     captain_hold_is_replyable "$id" "$queue" || continue
+    answer_digest=$(fm_ruling_sha256 "$answer") || return 0
+    fm_ruling_last_record "$id" || return 0
+    [ "$FM_RULING_LAST_TYPE" = REPLY ] \
+      && [ "$FM_RULING_LAST_DECISION" = "$answer_digest" ] || continue
     digest=$(ruling_digest "$id" "$answer") || return 0
     if { [ -f "$SEEN" ] && grep -Fqx "$digest" "$SEEN"; } \
       || printf '%s' "$hashes" | grep -Fqx "$digest"; then
@@ -228,11 +204,11 @@ detect_rulings() {
 }
 
 answer_for_hold() {
-  local id=${1:-} candidate_id candidate_answer candidates answer='' queue
+  local id=${1:-} answer queue
   [ "$#" -eq 1 ] || return 2
   fm_pr_task_id_valid "$id" || return 2
-  [ -f "$PENDING" ] && [ ! -L "$PENDING" ] || {
-    printf 'fm-captain-ruling-check: pending decisions are unavailable\n' >&2
+  [ -f "$REPLIES" ] && [ ! -L "$REPLIES" ] || {
+    printf 'fm-captain-ruling-check: captain replies are unavailable\n' >&2
     return 1
   }
   queue=$(captain_queue) || {
@@ -243,12 +219,7 @@ answer_for_hold() {
     printf 'fm-captain-ruling-check: captain hold is not replyable: %s\n' "$id" >&2
     return 1
   }
-  candidates=$(reply_candidates)
-  while IFS=$'\t' read -r candidate_id candidate_answer; do
-    [ "$candidate_id" = "$id" ] || continue
-    answer=$candidate_answer
-  done <<< "$candidates"
-  [ -n "$answer" ] || {
+  answer=$(fm_ruling_answer "$id") || {
     printf 'fm-captain-ruling-check: no complete answer for captain hold: %s\n' "$id" >&2
     return 1
   }
@@ -256,17 +227,11 @@ answer_for_hold() {
 }
 
 answer_for_locked_resolution() {
-  local id=${1:-} candidate_id candidate_answer candidates answer=''
+  local id=${1:-} answer
   [ "${FM_CAPTAIN_RULING_LOCK_HELD:-0}" = 1 ] || return 1
   [ "$#" -eq 1 ] || return 2
   fm_pr_task_id_valid "$id" || return 2
-  [ -f "$PENDING" ] && [ ! -L "$PENDING" ] || return 1
-  candidates=$(reply_candidates)
-  while IFS=$'\t' read -r candidate_id candidate_answer; do
-    [ "$candidate_id" = "$id" ] || continue
-    answer=$candidate_answer
-  done <<< "$candidates"
-  [ -n "$answer" ] || return 1
+  answer=$(fm_ruling_answer "$id") || return 1
   printf '%s\n' "$answer"
 }
 

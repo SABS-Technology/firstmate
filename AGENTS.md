@@ -80,7 +80,8 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
   projects.md        thin fleet navigation registry; firstmate-private, parsed by fm-project-mode.sh (section 6)
   secondmates.md      secondmate routing table; firstmate-private, maintained by fm-home-seed.sh (section 6)
-  pending-decisions.md  open-captain-decision projection the captain may answer outside chat: fm-pending-decisions-generate.sh owns the generated captain-queue region, and captain replies live only in the append-only reply region
+  pending-decisions.md  generated, captain-read-only open-decision projection owned in full by fm-pending-decisions-generate.sh
+  captain-replies.md  captain-owned outside-chat editor surface; the program reads but never writes it
   decisions/<hold-id>.md  the captain's exact ruling, recorded before fm-decision-hold.sh resolve routes dependent work and closes the decision (docs/decision-hold-lifecycle.md)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
@@ -95,6 +96,7 @@ state/               volatile runtime signals; gitignored
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
   captain-ruling.check.sh  generated global registered check for captain replies written outside chat; invokes bin/fm-captain-ruling-check.sh
   .captain-rulings-seen    private durable answer-digest set preventing repeat ruling wakes across polls and restarts
+  captain-ruling-log.tsv  private append-only REPLY/COMMIT log that makes reply ingestion and pre-mutation resolution one ordered CAS contract
   stage-transitions.tsv  append-only work-stage ledger written by fm-stage.sh: <task-id>, stage, UTC timestamp; a separate axis from <id>.status, never derived from it, and retained across teardown
   linear-pr-receipts/<id>.receipt  validated egress-neutral GitHub PR identity retained atomically by teardown before task metadata cleanup; exact fields and publication mechanics are owned by bin/fm-teardown.sh
   linear-projection.json  private Linear projection journal: remote ids, source digests, per-item revisions, attachment receipts, and archive tombstones; never a credential or vendor response body (docs/configuration.md "Linear projection")

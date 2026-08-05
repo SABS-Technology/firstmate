@@ -41,17 +41,10 @@
 # cannot close a hold that still owns undisclosed dependent work.
 # Direct concurrent backlog mutation is unsupported.
 # The command requires ownership of the home session lock and refuses if the blocked-dependent set changes between enumeration and the first mutation.
-# It then re-reads the captain's current reply through
-# `fm-captain-ruling-check.sh --answer` and refuses when that reply differs from the
-# prepared decision record, so a ruling revised during the agent turn is never closed
-# on superseded text. That read only ever refuses; it never supplies decision text.
-# Reply ingestion and resolution share state/.captain-ruling-resolution.lock from the first freshness read through hold closure.
-# A scoped ruling revision guard follows every body write, dependency unblock,
-# and hold close.
-# If an actor bypasses the serialization contract and changes the answer during that window, the resolver rolls back its mutations and refuses.
-# The first body write is explicitly tentative until its post-write freshness guard succeeds.
-# Only the subsequent freshness-verified marker may skip the current-answer re-read on an exact retry.
-# A changed decision is still rejected by the retry identity record.
+# Reply ingestion and resolution share state/.captain-ruling-resolution.lock.
+# The resolver appends a COMMIT to the same ordered log as ingested REPLY records
+# before any backlog mutation. A newer REPLY makes a stale retry refuse, while an
+# unchanged last COMMIT permits idempotent roll-forward after interruption.
 # It writes the captain decision and routed identities into a captain-kind hold,
 # clears those dependency edges, and only then marks that dedicated hold Done.
 # For a structured captain hold carried by ordinary work, resolve records the
@@ -63,7 +56,6 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-RULING_CHECK="$SCRIPT_DIR/fm-captain-ruling-check.sh"
 RULING_LOCK="$STATE/.captain-ruling-resolution.lock"
 PENDING_GENERATOR="$SCRIPT_DIR/fm-pending-decisions-generate.sh"
 
@@ -76,6 +68,12 @@ PENDING_GENERATOR="$SCRIPT_DIR/fm-pending-decisions-generate.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-captain-ruling-log-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-captain-ruling-log-lib.sh"
 
 usage() {
   awk '
@@ -185,30 +183,18 @@ $(printf '%s\n' "$listing" | blocked_row_ids)
 EOF
 }
 
-current_captain_answer() {  # <hold-id>
-  [ -x "$RULING_CHECK" ] || return 1
-  FM_CAPTAIN_RULING_LOCK_HELD=1 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-    FM_PENDING_DECISIONS_OVERRIDE="$DATA/pending-decisions.md" \
-    "$RULING_CHECK" --answer "$1" 2>/dev/null
-}
-
-captain_answer_matches() {  # <hold-id> <decision>
-  local answer
-  answer=$(FM_CAPTAIN_RULING_LOCK_HELD=1 FM_HOME="$FM_HOME" \
-    FM_STATE_OVERRIDE="$STATE" \
-    FM_PENDING_DECISIONS_OVERRIDE="$DATA/pending-decisions.md" \
-    "$RULING_CHECK" --answer-locked "$1" 2>/dev/null) || return 1
-  [ -n "$answer" ] && [ "$answer" = "$2" ]
-}
-
-verify_decision_is_current() {  # <hold-id> <decision>
-  local id=$1 decision=$2 answer
-  answer=$(current_captain_answer "$id") \
-    || fail "could not affirm the current captain reply for $id"
-  [ -n "$answer" ] \
-    || fail "could not affirm a non-empty current captain reply for $id"
-  [ "$answer" = "$decision" ] \
+commit_captain_ruling() {  # <hold-id> <decision-digest> <routed-csv>
+  local id=$1 decision_digest=$2 routes_digest rc
+  routes_digest=$(fm_ruling_sha256 "$3") \
+    || fail "could not digest the routed captain-decision identity"
+  if fm_ruling_commit "$id" "$decision_digest" "$routes_digest"; then
+    return 0
+  else
+    rc=$?
+  fi
+  [ "$rc" -ne 3 ] \
     || fail "captain hold $id has a newer captain reply than the prepared decision record"
+  fail "captain ruling log is unavailable or malformed"
 }
 
 active_hold_state() {  # <state>
@@ -357,45 +343,24 @@ verify_embedded_hold_resolved() {  # <hold-id> <decision-digest> <decision-point
   esac
 }
 
-restore_embedded_hold() {  # <hold-id> <original-body> <original-state> <hold-reason>
-  local id=$1 original_body=$2 original_state=$3 hold_reason=$4
-  tasks_axi update "$id" --body "$original_body" >/dev/null \
-    || fail "captain ruling changed during resolve and the ordinary work body could not be rolled back"
-  tasks_axi hold "$id" --reason "$hold_reason" --kind captain >/dev/null \
-    || fail "captain ruling changed during resolve and the ordinary work hold could not be restored"
-  if [ "$original_state" = in_flight ]; then
-    tasks_axi start "$id" >/dev/null \
-      || fail "captain ruling changed during resolve and the in-flight work state could not be restored"
-  fi
-}
-
 resolve_embedded_hold() {  # <id> <origin> <key> <decision> <digest> <pointer>
   local id=$1 origin=$2 key=$3 decision=$4 decision_digest=$5 decision_pointer=$6
-  local show original_body original_state hold_reason body marker
+  local show original_body body marker
   if verify_embedded_hold_resolved "$id" "$decision_digest" "$decision_pointer"; then
+    commit_captain_ruling "$id" "$decision_digest" ''
     printf 'resolved: %s\n' "$id"
     return 0
   fi
   verify_embedded_hold_active "$id" "$origin" "$key"
   show=$(task_show "$id")
   original_body=$(decoded_field "$show" body)
-  original_state=$(show_field "$show" state)
-  hold_reason=$(decoded_field "$show" hold_reason)
-  verify_decision_is_current "$id" "$decision"
+  commit_captain_ruling "$id" "$decision_digest" ''
   marker=$(embedded_resolution_marker "$decision_digest" "$decision_pointer")
   body=$(printf '%s\n\n%s\n\nCaptain decision:\n%s' "$original_body" "$marker" "$decision")
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on ordinary work item $id"
-  if ! captain_answer_matches "$id" "$decision"; then
-    restore_embedded_hold "$id" "$original_body" "$original_state" "$hold_reason"
-    fail "captain hold $id has a newer captain reply than the prepared decision record"
-  fi
   tasks_axi unhold "$id" >/dev/null \
     || fail "could not clear the resolved captain hold from ordinary work item $id"
-  if ! captain_answer_matches "$id" "$decision"; then
-    restore_embedded_hold "$id" "$original_body" "$original_state" "$hold_reason"
-    fail "captain hold $id has a newer captain reply than the prepared decision record"
-  fi
   verify_embedded_hold_resolved "$id" "$decision_digest" "$decision_pointer" \
     || fail "ordinary work item $id did not retain its durable decision record"
   printf 'resolved: %s (ordinary work remains active)\n' "$id"
@@ -435,32 +400,6 @@ command_resolve_item() {
   decision_digest=$(sha256_text "$decision")
   decision_pointer="data/decisions/$id.md"
   resolve_embedded_hold "$id" '' '' "$decision" "$decision_digest" "$decision_pointer"
-}
-
-restore_captain_resolution() {  # <hold-id> <original-body> <original-state> <hold-reason> <released> <closed>
-  local id=$1 original_body=$2 original_state=$3 hold_reason=$4 released=$5 closed=$6 dep
-  if [ "$closed" = 1 ]; then
-    tasks_axi reopen "$id" >/dev/null \
-      || fail "captain ruling changed during resolve and the closed hold could not be reopened"
-  fi
-  for dep in $released; do
-    tasks_axi block "$dep" --by "$id" >/dev/null \
-      || fail "captain ruling changed during resolve and the dependency on $dep could not be restored"
-  done
-  tasks_axi update "$id" --body "$original_body" >/dev/null \
-    || fail "captain ruling changed during resolve and the hold body could not be rolled back"
-  tasks_axi hold "$id" --reason "$hold_reason" --kind captain >/dev/null \
-    || fail "captain ruling changed during resolve and the captain hold could not be restored"
-  if [ "$original_state" = in_flight ]; then
-    tasks_axi start "$id" >/dev/null \
-      || fail "captain ruling changed during resolve and the in-flight hold state could not be restored"
-  fi
-}
-
-guard_captain_ruling_revision() {  # <id> <decision> <original-body> <original-state> <hold-reason> <released> <closed>
-  captain_answer_matches "$1" "$2" && return 0
-  restore_captain_resolution "$1" "$3" "$4" "$5" "$6" "$7"
-  fail "captain hold $1 has a newer captain reply than the prepared decision record"
 }
 
 verify_resolution_identity() {
@@ -681,7 +620,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' tentative_body='' routed='' routed_csv='' dep show blocked state kind hold_show hold_body original_hold_body original_hold_state original_hold_reason dependents current_dependents released='' resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' routed='' routed_csv='' dep show blocked state kind hold_show hold_body dependents current_dependents resolution_recorded=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -726,15 +665,13 @@ command_resolve() {
   if verify_hold_resolved "$id"; then
     hold_body=$(show_field "$hold_show" body)
     verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
+    commit_captain_ruling "$id" "$decision_digest" "$routed_csv"
     printf 'resolved: %s\n' "$id"
     return 0
   fi
   verify_hold_active "$id"
   hold_show=$(task_show "$id")
   hold_body=$(show_field "$hold_show" body)
-  original_hold_body=$(decoded_field "$hold_show" body)
-  original_hold_state=$(show_field "$hold_show" state)
-  original_hold_reason=$(decoded_field "$hold_show" hold_reason)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
       verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
@@ -770,8 +707,6 @@ command_resolve() {
     esac
   done
 
-  [ "$resolution_recorded" = 1 ] || verify_decision_is_current "$id" "$decision"
-
   current_dependents=$(hold_dependents "$id" | LC_ALL=C sort -u) \
     || fail "could not re-enumerate the work blocked by $id"
   [ "$current_dependents" = "$dependents" ] \
@@ -781,23 +716,10 @@ command_resolve() {
   for dep in $routed; do
     body="${body}"$'\n'"- ${dep}"
   done
-  tentative_body=$(printf 'Origin: %s\nDecision key: %s\nResolution pending freshness verification by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:' "$origin" "$key" "$decision_digest" "$routed_csv" "$decision")
-  for dep in $routed; do
-    tentative_body="${tentative_body}"$'\n'"- ${dep}"
-  done
-  if [ "$resolution_recorded" != 1 ]; then
-    tasks_axi update "$id" --body "$tentative_body" >/dev/null \
-      || fail "could not record the captain decision on $id"
-    guard_captain_ruling_revision "$id" "$decision" "$original_hold_body" \
-      "$original_hold_state" "$original_hold_reason" "$released" 0
-    tasks_axi update "$id" --body "$body" >/dev/null \
-      || fail "could not mark the captain decision freshness-verified on $id"
-    guard_captain_ruling_revision "$id" "$decision" "$original_hold_body" \
-      "$original_hold_state" "$original_hold_reason" "$released" 0
-  else
-    tasks_axi update "$id" --body "$body" >/dev/null \
-      || fail "could not preserve the verified captain decision on $id"
-  fi
+  commit_captain_ruling "$id" "$decision_digest" "$routed_csv"
+  resolution_recorded=$FM_RULING_COMMIT_RETRY
+  tasks_axi update "$id" --body "$body" >/dev/null \
+    || fail "could not record the captain decision on $id"
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep disappeared before routing"
     blocked=$(blocked_edges "$show")
@@ -805,19 +727,10 @@ command_resolve() {
       *",$id,"*)
         tasks_axi unblock "$dep" --by "$id" >/dev/null \
           || fail "could not route the recorded decision to $dep"
-        released="${released}${released:+ }$dep"
-        if [ "$resolution_recorded" != 1 ]; then
-          guard_captain_ruling_revision "$id" "$decision" "$original_hold_body" \
-            "$original_hold_state" "$original_hold_reason" "$released" 0
-        fi
         ;;
     esac
   done
   tasks_axi "done" "$id" >/dev/null || fail "could not close resolved captain hold $id"
-  if [ "$resolution_recorded" != 1 ]; then
-    guard_captain_ruling_revision "$id" "$decision" "$original_hold_body" \
-      "$original_hold_state" "$original_hold_reason" "$released" 1
-  fi
   verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
   printf 'resolved: %s -> %s\n' "$id" "$routed"
 }

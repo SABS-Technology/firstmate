@@ -20,7 +20,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-decision-hold.sh`    | Create, verify, complete, and resolve durable captain-held decisions                 |
 | `fm-captain-ruling-check.sh` | Install and run the global registered detector, or read the current answer for one open captain decision |
 | `fm-captain-queue.sh`    | Print the canonical read-only union of captain-held work, flagging asymmetric membership as an orphan (schema `fm-captain-queue.v1`) |
-| `fm-pending-decisions-generate.sh` | Regenerate the captain-queue region of `data/pending-decisions.md` while preserving its append-only reply region |
+| `fm-pending-decisions-generate.sh` | Regenerate the captain-read-only `data/pending-decisions.md` projection; captain edits live separately in `data/captain-replies.md` |
 | `fm-stage.sh`            | Record and read the append-only work-stage axis, independent of crew supervision status |
 | `fm-linear-projection.sh` | Run the one-way fail-closed Linear projection sync or its separate unauthenticated live schema check |
 | `fm-brief.sh`            | Scaffold ship, scout, secondmate-charter, and Herdr-lab briefs                       |

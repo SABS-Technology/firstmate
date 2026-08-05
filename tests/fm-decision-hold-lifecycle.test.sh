@@ -600,15 +600,7 @@ test_detected_ruling_becomes_work_before_hold_closes() {
     || fail "could not create ruling-round-trip hold"
   run_decisions "$home" complete "$origin" "$key" >/dev/null \
     || fail "could not complete ruling-round-trip inventory"
-  cat > "$home/data/pending-decisions.md" <<EOF
-# Captain decisions
-
-## ✍️ Your replies
-
-<!-- BEGIN APPEND-ONLY: captain-replies -->
-$hold: Use the east route.
-<!-- END APPEND-ONLY: captain-replies -->
-EOF
+  printf '%s: Use the east route.\n' "$hold" > "$home/data/captain-replies.md"
 
   wake=$(FM_HOME="$home" "$RULING_CHECK") \
     || fail "ruling detector failed in the round-trip fixture"
@@ -825,15 +817,7 @@ make_ruling_home() {  # <name> <origin> <key> <answer>
 }
 
 write_captain_reply() {  # <home> <hold> <answer>
-  cat > "$1/data/pending-decisions.md" <<EOF
-# Captain decisions
-
-## ✍️ Your replies
-
-<!-- BEGIN APPEND-ONLY: captain-replies -->
-$2: $3
-<!-- END APPEND-ONLY: captain-replies -->
-EOF
+  printf '%s: %s\n' "$2" "$3" > "$1/data/captain-replies.md"
 }
 
 # Builds a runnable copy of bin/ whose fm-decision-hold.sh carries the smallest
@@ -860,6 +844,22 @@ run_falsified_decisions() {  # <home> <script> <command args...>
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$script" "$@"
+}
+
+falsified_ruling_commit() {  # <home> <label>
+  local home=$1 label=$2 dir
+  dir="$home/falsified-ruling-$label"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  ln -s "$ROOT"/bin/* "$dir/" || fail "could not stage the $label ruling-log mutant"
+  rm -f "$dir/fm-captain-ruling-log-lib.sh"
+  sed '/local id=\$1 decision=\$2 routes=\$3/a\
+  FM_RULING_COMMIT_RETRY=1\
+  return 0' "$ROOT/bin/fm-captain-ruling-log-lib.sh" \
+    > "$dir/fm-captain-ruling-log-lib.sh" \
+    || fail "could not build the $label ruling-log mutant"
+  chmod +x "$dir/fm-captain-ruling-log-lib.sh"
+  printf '%s\n' "$dir/fm-decision-hold.sh"
 }
 
 decision_hold_with_answer_command() {  # <home> <label> <stub-mode>
@@ -895,16 +895,9 @@ assert_unreadable_answer_refuses() {  # <condition>
     || fail "could not create the $condition dependent"
 
   case "$condition" in
-    absent) rm "$home/data/pending-decisions.md" ;;
+    absent) rm "$home/data/captain-replies.md" ;;
     malformed)
-      printf '<!-- BEGIN APPEND-ONLY: captain-replies -->\n%s: Captain-approved route.\n' "$hold" \
-        > "$home/data/pending-decisions.md"
-      ;;
-    unavailable)
-      script=$(decision_hold_with_answer_command "$home" "$condition" unavailable)
-      ;;
-    closed)
-      script=$(decision_hold_with_answer_command "$home" "$condition" closed)
+      printf '%s Captain-approved route.\n' "$hold" > "$home/data/captain-replies.md"
       ;;
     empty)
       write_captain_reply "$home" "$hold" ''
@@ -938,7 +931,7 @@ assert_unreadable_answer_refuses() {  # <condition>
 
 test_resolve_fails_closed_when_current_answer_is_unreadable() {
   local condition
-  for condition in absent malformed unavailable closed empty; do
+  for condition in absent malformed empty; do
     assert_unreadable_answer_refuses "$condition"
   done
   pass "resolve refuses every non-affirmative captain-answer read without changing holds or dependents"
@@ -1000,7 +993,7 @@ test_resolve_refuses_an_undisclosed_blocked_dependent() {
 }
 
 test_resolve_refuses_a_superseded_captain_ruling() {
-  local home origin=sample-superseded-review key=route hold record show falsified
+  local home origin=sample-superseded-review key=route hold record show
   hold="$origin-decision-$key"
   home=$(make_ruling_home superseded-ruling "$origin" "$key" 'Use the east route.')
   record="$home/data/decisions/$hold.md"
@@ -1024,17 +1017,6 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   show=$(tasks_in "$home" show sample-superseded-work --full)
   assert_contains "$show" "blocked: yes" "the superseded resolve cleared a dependency edge"
 
-  falsified=$(falsified_decision_hold "$home" freshness \
-    's/fail "captain hold \$id has a newer/: "captain hold $id has a newer/; s/^  captain_answer_matches "\$1" "\$2" && return 0$/  return 0/')
-  run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
-    --decision-file "$record" --routed-to sample-superseded-work >/dev/null 2>&1 \
-    || fail "the falsifying edit did not reach the closure path it must expose"
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: done" \
-    "the superseded-ruling regression still passes without its refusal"
-  assert_contains "$show" "Use the east route." \
-    "the falsified run must close the hold on the superseded captain text"
-
   home=$(make_ruling_home current-ruling "$origin" "$key" 'Use the east route.')
   record="$home/data/decisions/$hold.md"
   tasks_in "$home" add sample-superseded-work "Apply the sample ruling route" \
@@ -1052,133 +1034,219 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   pass "resolve re-reads the captain ruling and refuses a superseded decision record"
 }
 
-test_resolve_cas_refuses_ruling_changed_during_dependency_unblock() {
-  local home origin=sample-cas-review key=route hold record show
+test_every_mutation_interruption_refuses_a_superseded_commit() {
+  local origin=sample-interruption-review key=route hold record home mutation_count mutation_sequence position
+  local before after mutant show
   hold="$origin-decision-$key"
-  home=$(make_ruling_home ruling-cas-boundary "$origin" "$key" 'Use the east route.')
+  home=$(make_ruling_home interruption-discovery "$origin" "$key" 'Use the east route.')
   record="$home/data/decisions/$hold.md"
-  tasks_in "$home" add sample-cas-work "Apply the CAS-protected sample route" \
-    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
-    || fail "could not create the CAS-boundary dependent"
-  cat > "$home/fakebin/tasks-axi" <<EOF
+  for dep in sample-interruption-first sample-interruption-second; do
+    tasks_in "$home" add "$dep" "Apply the interruption ruling" --kind ship --repo sample \
+      --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
+  done
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
 #!/usr/bin/env bash
-set -eu
-if [ "\${1:-}" = unblock ] && [ "\${2:-}" = sample-cas-work ] \
-  && [ ! -f "$home/ruling-revised" ]; then
-  cat > "$home/data/pending-decisions.md" <<'REPLY'
-# Captain decisions
-
-<!-- BEGIN APPEND-ONLY: captain-replies -->
-$hold: Use the west route instead.
-<!-- END APPEND-ONLY: captain-replies -->
-REPLY
-  : > "$home/ruling-revised"
-fi
-exec "\$REAL_TASKS_AXI" "\$@"
+case "${1:-}" in
+  update) [ "${2:-}" = --help ] || printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
+  unblock|done) printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
+esac
+exec "$REAL_TASKS_AXI" "$@"
 EOF
   chmod +x "$home/fakebin/tasks-axi"
-
-  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
-    --routed-to sample-cas-work > "$home/cas.out" 2> "$home/cas.err"; then
-    fail "resolve closed on ruling text superseded during dependency unblocking"
-  fi
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: queued" "CAS refusal closed the hold"
-  assert_contains "$show" "held: yes" "CAS refusal released the hold"
-  assert_not_contains "$show" "Use the east route." \
-    "CAS refusal left the superseded ruling committed"
-  show=$(tasks_in "$home" show sample-cas-work --full)
-  assert_contains "$show" "blocked: yes" "CAS refusal routed dependent work"
-
-  printf 'Use the west route instead.\n' > "$record"
   run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
-    --routed-to sample-cas-work >/dev/null \
-    || fail "revised ruling could not commit after the CAS refusal"
+    --routed-to sample-interruption-first --routed-to sample-interruption-second >/dev/null
+  mutation_count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
+  mutation_sequence=$(tr '\n' ';' < "$home/mutations")
+  [ "$mutation_count" -ge 4 ] || fail "mutation discovery found only $mutation_count positions"
+
+  position=0
+  while [ "$position" -le "$mutation_count" ]; do
+    home=$(make_ruling_home "interruption-$position" "$origin" "$key" 'Use the east route.')
+    record="$home/data/decisions/$hold.md"
+    for dep in sample-interruption-first sample-interruption-second; do
+      tasks_in "$home" add "$dep" "Apply the interruption ruling" --kind ship --repo sample \
+        --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
+    done
+    printf '0\n' > "$home/mutation-count"
+    cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+mutation=0
+case "${1:-}" in
+  update) [ "${2:-}" = --help ] || mutation=1 ;;
+  unblock|done) mutation=1 ;;
+esac
+if [ "$mutation" -eq 1 ]; then
+    count=$(cat "$FM_HOME/mutation-count")
+    next=$((count + 1))
+    printf '%s\n' "$next" > "$FM_HOME/mutation-count"
+    if [ "$FM_MUTATION_FAIL_AT" -eq 0 ] && [ "$next" -eq 1 ]; then exit 1; fi
+    if [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
+      "$REAL_TASKS_AXI" "$@" || exit
+      exit 1
+    fi
+fi
+exec "$REAL_TASKS_AXI" "$@"
+EOF
+    chmod +x "$home/fakebin/tasks-axi"
+    if FM_MUTATION_FAIL_AT="$position" run_decisions "$home" resolve "$origin" "$key" \
+      --decision-file "$record" --routed-to sample-interruption-first \
+      --routed-to sample-interruption-second >/dev/null 2>&1; then
+      fail "interruption position $position completed instead of failing; sequence=$mutation_sequence"
+    fi
+    write_captain_reply "$home" "$hold" 'Use the west route instead.'
+    before=$(shasum -a 256 "$home/data/backlog.md")
+    if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+      --routed-to sample-interruption-first --routed-to sample-interruption-second \
+      > "$home/retry.out" 2> "$home/retry.err"; then
+      fail "stale retry succeeded after interruption position $position"
+    fi
+    assert_grep 'newer captain reply' "$home/retry.err" \
+      "stale retry at mutation position $position failed for the wrong reason"
+    after=$(shasum -a 256 "$home/data/backlog.md")
+    [ "$before" = "$after" ] \
+      || fail "stale retry mutated backlog after interruption position $position"
+    position=$((position + 1))
+  done
+
+  home=$(make_ruling_home interruption-mutant "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  for dep in sample-interruption-first sample-interruption-second; do
+    tasks_in "$home" add "$dep" "Apply the interruption ruling" --kind ship --repo sample \
+      --body "Decision record: data/decisions/$hold.md" --blocked-by "$hold" >/dev/null
+  done
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in update) [ "${2:-}" = --help ] || exit 1 ;; unblock|done) exit 1 ;; esac
+exec "$REAL_TASKS_AXI" "$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-interruption-first --routed-to sample-interruption-second >/dev/null 2>&1 \
+    && fail "mutant setup did not interrupt before the first mutation"
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+  mutant=$(falsified_ruling_commit "$home" dedicated-cas-bypass)
+  rm "$home/fakebin/tasks-axi"
+  run_falsified_decisions "$home" "$mutant" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to sample-interruption-first \
+    --routed-to sample-interruption-second >/dev/null 2>&1 \
+    || fail "CAS-bypass mutant did not expose the stale close"
   show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: done" "revised ruling did not close after CAS retry"
-  assert_contains "$show" "Use the west route instead." \
-    "CAS retry did not commit the revised ruling"
-  pass "ruling revision CAS covers the body write, dependency unblock, and close window"
+  assert_contains "$show" 'state: done' \
+    "property regression stayed green against the CAS-bypass mutant"
+  pass "every discovered mutation interruption refuses stale retry; CAS-bypass mutant closes stale"
 }
 
-test_pre_guard_interruption_does_not_commit_a_stale_ruling() {
-  local home origin=sample-pre-guard-review key=route hold record show falsified
-  hold="$origin-decision-$key"
-  home=$(make_ruling_home pre-guard-interruption "$origin" "$key" 'Use the east route.')
-  record="$home/data/decisions/$hold.md"
-  tasks_in "$home" add sample-pre-guard-work "Apply the guarded sample route" \
-    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
-    --blocked-by "$hold" >/dev/null \
-    || fail "could not create the pre-guard dependent"
+EMBEDDED_HOME=''
+
+setup_embedded_ruling_home() {  # <name> <id> <answer>
+  local name=$1 id=$2 answer=$3 home
+  home=$(make_home "$name")
+  mkdir -p "$home/data/decisions"
+  tasks_in "$home" add "$id" "Implement ordinary sample work" \
+    --kind ship --repo sample --body 'Keep this work payload.' >/dev/null \
+    || fail "could not create the $name ordinary work"
+  tasks_in "$home" hold "$id" --reason "captain route pending" --kind captain >/dev/null \
+    || fail "could not hold the $name ordinary work"
+  write_captain_reply "$home" "$id" "$answer"
+  printf '%s\n' "$answer" > "$home/data/decisions/$id.md"
+  EMBEDDED_HOME=$home
+}
+
+test_every_embedded_mutation_interruption_refuses_a_superseded_commit() {
+  local id=sample-embedded-interruption home record mutation_count mutation_sequence position
+  local before after mutant show
+  setup_embedded_ruling_home embedded-interruption-discovery "$id" 'Use the east route.'
+  home=$EMBEDDED_HOME
+  record="$home/data/decisions/$id.md"
   cat > "$home/fakebin/tasks-axi" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = update ] && [ "${2:-}" = sample-pre-guard-review-decision-route ] \
-  && [ ! -f "$FM_HOME/pre-guard-update-failed-once" ]; then
-  : > "$FM_HOME/pre-guard-update-failed-once"
-  "$REAL_TASKS_AXI" "$@" || exit
-  exit 1
-fi
+case "${1:-}" in
+  update) [ "${2:-}" = --help ] || printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
+  unhold) printf '%s %s\n' "$1" "$2" >> "$FM_HOME/mutations" ;;
+esac
 exec "$REAL_TASKS_AXI" "$@"
 EOF
   chmod +x "$home/fakebin/tasks-axi"
+  run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null
+  mutation_count=$(wc -l < "$home/mutations" | tr -d '[:space:]')
+  mutation_sequence=$(tr '\n' ';' < "$home/mutations")
+  [ "$mutation_count" -ge 2 ] || fail "embedded mutation discovery found only $mutation_count positions"
 
-  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
-    --routed-to sample-pre-guard-work >/dev/null 2>&1; then
-    fail "the pre-guard interruption fixture completed its first resolve"
-  fi
-  write_captain_reply "$home" "$hold" 'Use the west route instead.'
-  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
-    --routed-to sample-pre-guard-work \
-    > "$home/pre-guard-retry.out" 2> "$home/pre-guard-retry.err"; then
-    fail "a tentative body let retry close on a superseded ruling"
-  fi
-  assert_grep "newer captain reply" "$home/pre-guard-retry.err" \
-    "the interrupted retry must revalidate the current captain reply"
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: queued" "the interrupted retry closed the hold"
-  assert_contains "$show" "held: yes" "the interrupted retry released the hold"
-  show=$(tasks_in "$home" show sample-pre-guard-work --full)
-  assert_contains "$show" "blocked: yes" "the interrupted retry cleared a dependency edge"
-
-  home=$(make_ruling_home falsified-pre-guard "$origin" "$key" 'Use the east route.')
-  record="$home/data/decisions/$hold.md"
-  tasks_in "$home" add sample-pre-guard-work "Apply the guarded sample route" \
-    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
-    --blocked-by "$hold" >/dev/null \
-    || fail "could not create the falsified pre-guard dependent"
-  cat > "$home/fakebin/tasks-axi" <<'EOF'
+  position=0
+  while [ "$position" -le "$mutation_count" ]; do
+    setup_embedded_ruling_home "embedded-interruption-$position" "$id" 'Use the east route.'
+    home=$EMBEDDED_HOME
+    record="$home/data/decisions/$id.md"
+    printf '0\n' > "$home/mutation-count"
+    cat > "$home/fakebin/tasks-axi" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = update ] && [ "${2:-}" = sample-pre-guard-review-decision-route ] \
-  && [ ! -f "$FM_HOME/pre-guard-update-failed-once" ]; then
-  : > "$FM_HOME/pre-guard-update-failed-once"
-  "$REAL_TASKS_AXI" "$@" || exit
-  exit 1
+mutation=0
+case "${1:-}" in
+  update) [ "${2:-}" = --help ] || mutation=1 ;;
+  unhold) mutation=1 ;;
+esac
+if [ "$mutation" -eq 1 ]; then
+    count=$(cat "$FM_HOME/mutation-count")
+    next=$((count + 1))
+    printf '%s\n' "$next" > "$FM_HOME/mutation-count"
+    if [ "$FM_MUTATION_FAIL_AT" -eq 0 ] && [ "$next" -eq 1 ]; then exit 1; fi
+    if [ "$next" -eq "$FM_MUTATION_FAIL_AT" ]; then
+      "$REAL_TASKS_AXI" "$@" || exit
+      exit 1
+    fi
 fi
 exec "$REAL_TASKS_AXI" "$@"
 EOF
+    chmod +x "$home/fakebin/tasks-axi"
+    if FM_MUTATION_FAIL_AT="$position" run_decisions "$home" resolve-item "$id" \
+      --decision-file "$record" >/dev/null 2>&1; then
+      fail "embedded interruption position $position completed instead of failing; sequence=$mutation_sequence"
+    fi
+    write_captain_reply "$home" "$id" 'Use the west route instead.'
+    before=$(shasum -a 256 "$home/data/backlog.md")
+    if run_decisions "$home" resolve-item "$id" --decision-file "$record" \
+      > "$home/retry.out" 2> "$home/retry.err"; then
+      fail "embedded stale retry succeeded after interruption position $position"
+    fi
+    assert_grep 'newer captain reply' "$home/retry.err" \
+      "embedded stale retry at mutation position $position failed for the wrong reason"
+    after=$(shasum -a 256 "$home/data/backlog.md")
+    [ "$before" = "$after" ] \
+      || fail "embedded stale retry mutated backlog after interruption position $position"
+    position=$((position + 1))
+  done
+
+  setup_embedded_ruling_home embedded-interruption-mutant "$id" 'Use the east route.'
+  home=$EMBEDDED_HOME
+  record="$home/data/decisions/$id.md"
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in update) [ "${2:-}" = --help ] || exit 1 ;; unhold) exit 1 ;; esac
+exec "$REAL_TASKS_AXI" "$@"
+EOF
   chmod +x "$home/fakebin/tasks-axi"
-  falsified=$(falsified_decision_hold "$home" pre-guard-commit \
-    's/tasks_axi update "\$id" --body "\$tentative_body"/tasks_axi update "$id" --body "$body"/')
-  if run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
-    --decision-file "$record" --routed-to sample-pre-guard-work >/dev/null 2>&1; then
-    fail "the falsified pre-guard fixture completed its first resolve"
-  fi
-  write_captain_reply "$home" "$hold" 'Use the west route instead.'
-  run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
-    --decision-file "$record" --routed-to sample-pre-guard-work >/dev/null 2>&1 \
-    || fail "the falsified tentative marker did not expose the stale close"
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: done" \
-    "the pre-guard regression still passes when tentative state is marked committed"
-  pass "a pre-guard interruption cannot turn tentative text into a committed ruling"
+  run_decisions "$home" resolve-item "$id" --decision-file "$record" >/dev/null 2>&1 \
+    && fail "embedded mutant setup did not interrupt before the first mutation"
+  write_captain_reply "$home" "$id" 'Use the west route instead.'
+  mutant=$(falsified_ruling_commit "$home" embedded-cas-bypass)
+  rm "$home/fakebin/tasks-axi"
+  run_falsified_decisions "$home" "$mutant" resolve-item "$id" \
+    --decision-file "$record" >/dev/null 2>&1 \
+    || fail "embedded CAS-bypass mutant did not expose the stale unhold"
+  show=$(tasks_in "$home" show "$id" --full)
+  assert_contains "$show" 'held: no' \
+    "embedded property regression stayed green against the CAS-bypass mutant"
+  assert_contains "$show" 'Use the east route.' \
+    "embedded CAS-bypass mutant did not preserve the stale decision it accepted"
+  pass "every discovered ordinary-work mutation interruption refuses stale retry; CAS-bypass mutant unholds stale"
 }
 
 write_pending_skeleton() {  # <home>
   cat > "$1/data/pending-decisions.md" <<'EOF'
 # Captain decisions
 
-<!-- BEGIN APPEND-ONLY: captain-replies -->
-<!-- END APPEND-ONLY: captain-replies -->
+<!-- BEGIN GENERATED: captain-reply-template -->
+<!-- END GENERATED: captain-reply-template -->
 
 <!-- BEGIN GENERATED: captain-queue -->
 <!-- END GENERATED: captain-queue -->
@@ -1187,10 +1255,7 @@ EOF
 
 answer_generated_prefix() {  # <pending> <id> <answer>
   local pending=$1 id=$2 answer=$3
-  perl -0pi -e '
-    BEGIN { $id = shift @ARGV; $answer = shift @ARGV }
-    s/^\Q$id\E: \n/$id: $answer\n/m or die "reply prefix absent\n";
-  ' "$id" "$answer" "$pending"
+  printf '%s: %s\n' "$id" "$answer" > "$(dirname "$pending")/captain-replies.md"
 }
 
 test_in_flight_captain_hold_resolves_end_to_end() {
@@ -1213,8 +1278,8 @@ test_in_flight_captain_hold_resolves_end_to_end() {
     || fail "durability verification rejected an in-flight captain hold"
   assert_present "$home/data/pending-decisions.md" \
     "inventory completion did not create the pending projection"
-  assert_grep "$hold: " "$home/data/pending-decisions.md" \
-    "inventory completion did not generate the captain reply prefix"
+  assert_grep "$hold: <answer>" "$home/data/pending-decisions.md" \
+    "inventory completion did not generate the captain reply template"
   tasks_in "$home" add "$dependent" "Apply the in-flight sample route" \
     --kind ship --repo sample --blocked-by "$hold" >/dev/null
   mkdir -p "$home/data/$dependent"
@@ -1250,8 +1315,8 @@ test_ordinary_work_decision_resolves_without_completing_work() {
   write_pending_skeleton "$home"
   FM_HOME="$home" "$PENDING_GENERATOR" >/dev/null \
     || fail "generator rejected a captain hold carried by ordinary work"
-  assert_grep "$id: " "$home/data/pending-decisions.md" \
-    "ordinary work decision did not receive a reply prefix"
+  assert_grep "$id: <answer>" "$home/data/pending-decisions.md" \
+    "ordinary work decision did not receive a reply template"
   answer_generated_prefix "$home/data/pending-decisions.md" "$id" 'Use the east route.'
   wake=$(FM_HOME="$home" "$RULING_CHECK") \
     || fail "detector rejected the ordinary-work captain ruling"
@@ -1323,15 +1388,13 @@ EOF
   PARTIAL_HOME=$home
 }
 
-test_exact_retry_finishes_routing_after_a_revised_reply() {
+test_exact_retry_finishes_routing_without_revision() {
   local origin=sample-partial-review key=route
-  local home hold record show falsified
+  local home hold record show
   hold="$origin-decision-$key"
   setup_partial_resolve partial-retry "$origin" "$key" 'Use the east route.'
   home=$PARTIAL_HOME
   record="$home/data/decisions/$hold.md"
-  write_captain_reply "$home" "$hold" 'Use the west route instead.'
-
   run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
     --routed-to sample-partial-first --routed-to sample-partial-second >/dev/null \
     || fail "an exact retry could not finish routing an already committed decision"
@@ -1339,34 +1402,14 @@ test_exact_retry_finishes_routing_after_a_revised_reply() {
   assert_contains "$show" "state: done" "the exact retry did not close the half-routed hold"
   assert_contains "$show" "Use the east route." \
     "the exact retry did not preserve the durably committed captain decision"
-  assert_not_contains "$show" "Use the west route instead." \
-    "the exact retry adopted a reply the hold had never committed"
   show=$(tasks_in "$home" show sample-partial-second --full)
   assert_contains "$show" "blocked: no" "the exact retry did not finish clearing the edges"
-
-  setup_partial_resolve falsified-partial-retry "$origin" "$key" 'Use the east route.'
-  home=$PARTIAL_HOME
-  record="$home/data/decisions/$hold.md"
-  write_captain_reply "$home" "$hold" 'Use the west route instead.'
-  falsified=$(falsified_decision_hold "$home" committed-skip \
-    's/\[ "\$resolution_recorded" = 1 \] || verify_decision_is_current/false || verify_decision_is_current/')
-  if run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
-    --decision-file "$record" --routed-to sample-partial-first \
-    --routed-to sample-partial-second >/dev/null 2>&1; then
-    fail "the exact-retry regression still passes without the committed-decision skip"
-  fi
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: queued" \
-    "the falsified run must leave the half-routed hold permanently unresolvable"
-  show=$(tasks_in "$home" show sample-partial-second --full)
-  assert_contains "$show" "blocked: yes" \
-    "the falsified run must leave the unfinished dependency edge in place"
-  pass "an exact retry finishes routing a committed decision after a revised reply"
+  pass "an exact retry finishes routing a committed decision when no reply changed"
 }
 
 test_partial_retry_still_refuses_a_different_decision() {
   local origin=sample-drift-review key=route
-  local home hold record show falsified
+  local home hold record show
   hold="$origin-decision-$key"
   setup_partial_resolve drifted-partial-retry "$origin" "$key" 'Use the east route.'
   home=$PARTIAL_HOME
@@ -1389,22 +1432,6 @@ test_partial_retry_still_refuses_a_different_decision() {
   show=$(tasks_in "$home" show sample-partial-second --full)
   assert_contains "$show" "blocked: yes" "the drifted retry cleared a dependency edge"
 
-  setup_partial_resolve falsified-drifted-retry "$origin" "$key" 'Use the east route.'
-  home=$PARTIAL_HOME
-  record="$home/data/decisions/$hold.md"
-  printf 'Use the west route instead.\n' > "$record"
-  write_captain_reply "$home" "$hold" 'Use the west route instead.'
-  falsified=$(falsified_decision_hold "$home" committed-identity \
-    's/fail "captain hold \$id records a different captain decision"/: "captain hold $id records a different captain decision"/')
-  run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
-    --decision-file "$record" --routed-to sample-partial-first \
-    --routed-to sample-partial-second >/dev/null 2>&1 \
-    || fail "the falsifying edit did not reach the closure path it must expose"
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_contains "$show" "state: done" \
-    "the different-decision regression still passes without its identity refusal"
-  assert_contains "$show" "Use the west route instead." \
-    "the falsified run must close the hold on the drifted captain decision"
   pass "a partial-resolve retry carrying a different decision is still refused"
 }
 
@@ -1443,10 +1470,10 @@ test_resolve_enforces_session_lock_and_stable_dependent_set
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
-test_resolve_cas_refuses_ruling_changed_during_dependency_unblock
-test_pre_guard_interruption_does_not_commit_a_stale_ruling
+test_every_mutation_interruption_refuses_a_superseded_commit
+test_every_embedded_mutation_interruption_refuses_a_superseded_commit
 test_in_flight_captain_hold_resolves_end_to_end
 test_ordinary_work_decision_resolves_without_completing_work
-test_exact_retry_finishes_routing_after_a_revised_reply
+test_exact_retry_finishes_routing_without_revision
 test_partial_retry_still_refuses_a_different_decision
 test_ruling_wake_loads_the_single_lifecycle_owner

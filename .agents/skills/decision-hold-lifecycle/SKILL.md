@@ -48,7 +48,7 @@ Create that work with normal `tasks-axi add` fields and `--blocked-by <hold-id>`
 Keep every dependent item in the same authoritative home as the hold and point its durable body or brief at the decision record rather than copying the ruling into multiple owners.
 For an ordinary-kind item, keep the existing work item as the implementation owner and do not invent a dependent, clear its work dependencies, or complete it as part of ruling resolution.
 Write the captain's exact answer to the private durable record `data/decisions/<hold-id>.md` in that home.
-Record the captain's reply verbatim, because `resolve` re-reads the current reply and refuses when the record no longer matches it.
+Record the captain's reply verbatim, because `resolve` commits only when the latest ingested REPLY record matches it.
 For a captain-kind hold, call `bin/fm-decision-hold.sh resolve <origin-id> <decision-key> --decision-file data/decisions/<hold-id>.md --routed-to <task-id>` with every routed identity.
 `resolve` also refuses while any task it discovers is still blocked by a captain-kind hold and absent from `--routed-to`, so route each such task rather than working around the refusal.
 For an ordinary-kind item, call `bin/fm-decision-hold.sh resolve-item <hold-id> --decision-file data/decisions/<hold-id>.md`; that command clears only the captain hold and leaves the work active.
@@ -57,7 +57,8 @@ Only after `resolve-item` succeeds may the ordinary work item proceed.
 Regenerate the pending-decisions projection after the matching command succeeds.
 Confirm the decision left the canonical captain queue and the routed or ordinary work remains in the structured backlog.
 If any creation, dependency, decision-record, or resolve step fails, leave the hold open, preserve the already-authored state, and retry the same identities rather than directly unholding or completing the hold.
-Retry with the decision record already prepared for that hold rather than re-reading `--answer` into a fresh record, because a retry carrying different decision text is refused even after the captain revised the reply.
+Retry with the decision record already prepared only when the captain reply did not change.
+When the captain revised the reply, the old record must refuse before mutation; read the new answer and author a new canonical decision record before resolving it.
 
 `bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.
