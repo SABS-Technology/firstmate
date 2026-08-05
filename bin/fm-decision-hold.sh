@@ -47,11 +47,11 @@
 # on superseded text. That read only ever refuses; it never supplies decision text.
 # Reply ingestion and resolution share state/.captain-ruling-resolution.lock from the first freshness read through hold closure.
 # A scoped ruling revision guard follows every body write, dependency unblock,
-# and hold close. If an actor bypasses the serialization contract and changes the
-# answer during that window, the resolver rolls back its mutations and refuses.
-# The re-read is skipped only once the identical decision is already committed to the
-# hold body, because that retry finishes an existing close rather than deciding a new
-# one; a changed decision is still rejected by the retry identity record.
+# and hold close.
+# If an actor bypasses the serialization contract and changes the answer during that window, the resolver rolls back its mutations and refuses.
+# The first body write is explicitly tentative until its post-write freshness guard succeeds.
+# Only the subsequent freshness-verified marker may skip the current-answer re-read on an exact retry.
+# A changed decision is still rejected by the retry identity record.
 # It writes the captain decision and routed identities into a captain-kind hold,
 # clears those dependency edges, and only then marks that dedicated hold Done.
 # For a structured captain hold carried by ordinary work, resolve records the
@@ -677,7 +677,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' routed='' routed_csv='' dep show blocked state kind hold_show hold_body original_hold_body original_hold_state original_hold_reason dependents current_dependents released='' resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' decision_pointer='' body='' tentative_body='' routed='' routed_csv='' dep show blocked state kind hold_show hold_body original_hold_body original_hold_state original_hold_reason dependents current_dependents released='' resolution_recorded=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -777,11 +777,22 @@ command_resolve() {
   for dep in $routed; do
     body="${body}"$'\n'"- ${dep}"
   done
-  tasks_axi update "$id" --body "$body" >/dev/null \
-    || fail "could not record the captain decision on $id"
+  tentative_body=$(printf 'Origin: %s\nDecision key: %s\nResolution pending freshness verification by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:' "$origin" "$key" "$decision_digest" "$routed_csv" "$decision")
+  for dep in $routed; do
+    tentative_body="${tentative_body}"$'\n'"- ${dep}"
+  done
   if [ "$resolution_recorded" != 1 ]; then
+    tasks_axi update "$id" --body "$tentative_body" >/dev/null \
+      || fail "could not record the captain decision on $id"
     guard_captain_ruling_revision "$id" "$decision" "$original_hold_body" \
       "$original_hold_state" "$original_hold_reason" "$released" 0
+    tasks_axi update "$id" --body "$body" >/dev/null \
+      || fail "could not mark the captain decision freshness-verified on $id"
+    guard_captain_ruling_revision "$id" "$decision" "$original_hold_body" \
+      "$original_hold_state" "$original_hold_reason" "$released" 0
+  else
+    tasks_axi update "$id" --body "$body" >/dev/null \
+      || fail "could not preserve the verified captain decision on $id"
   fi
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep disappeared before routing"

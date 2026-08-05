@@ -1101,6 +1101,78 @@ EOF
   pass "ruling revision CAS covers the body write, dependency unblock, and close window"
 }
 
+test_pre_guard_interruption_does_not_commit_a_stale_ruling() {
+  local home origin=sample-pre-guard-review key=route hold record show falsified
+  hold="$origin-decision-$key"
+  home=$(make_ruling_home pre-guard-interruption "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-pre-guard-work "Apply the guarded sample route" \
+    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null \
+    || fail "could not create the pre-guard dependent"
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = update ] && [ "${2:-}" = sample-pre-guard-review-decision-route ] \
+  && [ ! -f "$FM_HOME/pre-guard-update-failed-once" ]; then
+  : > "$FM_HOME/pre-guard-update-failed-once"
+  "$REAL_TASKS_AXI" "$@" || exit
+  exit 1
+fi
+exec "$REAL_TASKS_AXI" "$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-pre-guard-work >/dev/null 2>&1; then
+    fail "the pre-guard interruption fixture completed its first resolve"
+  fi
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-pre-guard-work \
+    > "$home/pre-guard-retry.out" 2> "$home/pre-guard-retry.err"; then
+    fail "a tentative body let retry close on a superseded ruling"
+  fi
+  assert_grep "newer captain reply" "$home/pre-guard-retry.err" \
+    "the interrupted retry must revalidate the current captain reply"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the interrupted retry closed the hold"
+  assert_contains "$show" "held: yes" "the interrupted retry released the hold"
+  show=$(tasks_in "$home" show sample-pre-guard-work --full)
+  assert_contains "$show" "blocked: yes" "the interrupted retry cleared a dependency edge"
+
+  home=$(make_ruling_home falsified-pre-guard "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add sample-pre-guard-work "Apply the guarded sample route" \
+    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null \
+    || fail "could not create the falsified pre-guard dependent"
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = update ] && [ "${2:-}" = sample-pre-guard-review-decision-route ] \
+  && [ ! -f "$FM_HOME/pre-guard-update-failed-once" ]; then
+  : > "$FM_HOME/pre-guard-update-failed-once"
+  "$REAL_TASKS_AXI" "$@" || exit
+  exit 1
+fi
+exec "$REAL_TASKS_AXI" "$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+  falsified=$(falsified_decision_hold "$home" pre-guard-commit \
+    's/tasks_axi update "\$id" --body "\$tentative_body"/tasks_axi update "$id" --body "$body"/')
+  if run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to sample-pre-guard-work >/dev/null 2>&1; then
+    fail "the falsified pre-guard fixture completed its first resolve"
+  fi
+  write_captain_reply "$home" "$hold" 'Use the west route instead.'
+  run_falsified_decisions "$home" "$falsified" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to sample-pre-guard-work >/dev/null 2>&1 \
+    || fail "the falsified tentative marker did not expose the stale close"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" \
+    "the pre-guard regression still passes when tentative state is marked committed"
+  pass "a pre-guard interruption cannot turn tentative text into a committed ruling"
+}
+
 write_pending_skeleton() {  # <home>
   cat > "$1/data/pending-decisions.md" <<'EOF'
 # Captain decisions
@@ -1369,6 +1441,7 @@ test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
 test_resolve_cas_refuses_ruling_changed_during_dependency_unblock
+test_pre_guard_interruption_does_not_commit_a_stale_ruling
 test_in_flight_captain_hold_resolves_end_to_end
 test_ordinary_work_decision_resolves_without_completing_work
 test_exact_retry_finishes_routing_after_a_revised_reply
