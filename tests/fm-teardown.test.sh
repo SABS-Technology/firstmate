@@ -225,7 +225,7 @@ SH
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
-      *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
+      *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' 'MERGED' '$head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
     esac
     ;;
@@ -693,7 +693,7 @@ test_squash_merged_pr_allows_when_head_ancestor_of_pr_head() {
 }
 
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
-  local case_dir rc local_head pr_head
+  local case_dir rc local_head pr_head receipt transport transport_called
   case_dir=$(make_case no-pr-branch-discovery)
   write_meta "$case_dir" no-mistakes ship
   # Reproduces the real false-refusal report exactly, with NO pr=/pr_head=
@@ -714,14 +714,28 @@ test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
   ! grep -qE '^(pr|pr_head)=' "$case_dir/state/task-x1.meta" \
     || fail "no-pr-branch-discovery: test setup bug, meta unexpectedly has a pr= line"
 
+  transport="$case_dir/fake-linear-transport"
+  transport_called="$case_dir/linear-transport.called"
+  cat > "$transport" <<'SH'
+#!/usr/bin/env bash
+: > "$FM_LINEAR_TRANSPORT_CALLED"
+exit 97
+SH
+  chmod +x "$transport"
   set +e
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  FM_LINEAR_TRANSPORT="$transport" FM_LINEAR_TRANSPORT_CALLED="$transport_called" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 0 "$rc" "no-pr-branch-discovery: teardown should succeed by discovering the merged PR from the branch name"
   ! grep -q REFUSED "$case_dir/stderr" || fail "no-pr-branch-discovery: teardown printed a REFUSED line"
-  pass "teardown discovers a merged PR by branch name and tears down when no pr= was ever recorded"
+  receipt="$case_dir/state/linear-pr-receipts/task-x1.receipt"
+  [ "$(cat "$receipt")" = $'fm-linear-pr-receipt.v1\ntask_id=task-x1\npr_url=https://github.com/example/repo/pull/7' ] \
+    || fail "branch-discovered PR did not publish its canonical receipt"
+  assert_absent "$transport_called" \
+    "branch-discovered receipt publication invoked the Linear transport"
+  pass "branch-discovered merged PR retains an atomic egress-neutral receipt"
 }
 
 test_squash_merged_pr_allows_replayed_unpushed_patch() {
