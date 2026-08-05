@@ -221,6 +221,44 @@ test_global_check_identity_is_reserved() {
   pass "the global ruling detector identity is reserved before task check mutation"
 }
 
+test_global_install_preserves_and_releases_legacy_task_identity() {
+  local world home fakebin check trust before_check before_trust rc
+  world=$(make_home legacy-identity); home=${world%%|*}; fakebin=${world#*|}
+  check="$home/state/captain-ruling.check.sh"
+  trust="$home/state/captain-ruling.check-trust"
+  fm_write_meta "$home/state/captain-ruling.meta" \
+    window=fm-captain-ruling worktree=/absent project=/absent harness=codex kind=ship mode=no-mistakes
+  printf '#!/usr/bin/env bash\nprintf "legacy task check\\n"\n' > "$check"
+  chmod 0700 "$check"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-check-register.sh" captain-ruling >/dev/null \
+    || fail "could not register the legacy task check fixture"
+  before_check=$(shasum -a 256 "$check")
+  before_trust=$(shasum -a 256 "$trust")
+
+  set +e
+  FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "$CHECK" --install > "$home/install.out" 2> "$home/install.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "global installation overwrote a pre-upgrade task identity"
+  assert_grep 'must be torn down before installation' "$home/install.err" \
+    "legacy collision refusal did not name its cleanup path"
+  [ "$(shasum -a 256 "$check")" = "$before_check" ] \
+    && [ "$(shasum -a 256 "$trust")" = "$before_trust" ] \
+    || fail "global installation changed legacy check or trust bytes"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "$ROOT/bin/fm-teardown.sh" captain-ruling --force >/dev/null 2>&1 \
+    || fail "the bounded legacy-identity teardown path failed"
+  assert_absent "$home/state/captain-ruling.meta" \
+    "legacy cleanup retained captain-ruling task metadata"
+  assert_absent "$check" "legacy cleanup retained the task check"
+  assert_absent "$trust" "legacy cleanup retained the task trust binding"
+  pass "global install preserves legacy task bytes and guarded teardown releases the identity"
+}
+
 test_detection_dedupe_malformed_and_immutability() {
   local world home fakebin pending out before after started elapsed
   world=$(make_home detection); home=${world%%|*}; fakebin=${world#*|}
@@ -492,6 +530,7 @@ test_file_ruling_channel_declares_accepted_untrusted_boundary() {
 
 test_global_install_is_registered
 test_global_check_identity_is_reserved
+test_global_install_preserves_and_releases_legacy_task_identity
 test_detection_dedupe_malformed_and_immutability
 test_detection_retries_until_durable_wake_is_acknowledged
 test_malformed_resolver_log_wakes_and_recovers_after_repair

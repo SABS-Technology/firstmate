@@ -24,7 +24,7 @@
 # Bootstrap calls this only while the session lock is held, so the check shares
 # fm-watch.sh's existing FM_CHECK_INTERVAL cadence and FM_CHECK_TIMEOUT bound.
 #
-# Usage: fm-captain-ruling-check.sh [--install | --answer <id>]
+# Usage: fm-captain-ruling-check.sh [--install | --is-installed | --answer <id>]
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,16 +69,29 @@ shim_content() {
     "exec $(printf '%q' "$SCRIPT_DIR/fm-captain-ruling-check.sh") \"\$@\""
 }
 
+check_is_installed() {
+  local device
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
+  device=$(fm_pr_file_device "$STATE") || return 1
+  fm_pr_private_file_valid "$CHECK" 700 "$device" \
+    && cmp -s "$CHECK" <(shim_content) \
+    && fm_custom_check_registered "$STATE" "$CHECK_ID"
+}
+
 install_check() {
   local device tmp
   mkdir -p "$STATE" 2>/dev/null || return 1
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
   device=$(fm_pr_file_device "$STATE") || return 1
 
-  if fm_pr_private_file_valid "$CHECK" 700 "$device" \
-    && cmp -s "$CHECK" <(shim_content) \
-    && fm_custom_check_registered "$STATE" "$CHECK_ID"; then
+  if check_is_installed; then
     return 0
+  fi
+  if [ -e "$STATE/$CHECK_ID.meta" ] || [ -L "$STATE/$CHECK_ID.meta" ] \
+    || [ -e "$CHECK" ] || [ -L "$CHECK" ] \
+    || [ -e "$STATE/$CHECK_ID.check-trust" ] || [ -L "$STATE/$CHECK_ID.check-trust" ]; then
+    printf 'fm-captain-ruling-check: legacy captain-ruling task or check must be torn down before installation\n' >&2
+    return 1
   fi
   fm_pr_regular_destination_on_device_or_absent "$CHECK" "$device" || return 1
   umask 077
@@ -247,6 +260,7 @@ case "${1:-}" in
     exit "$status"
     ;;
   --install) [ "$#" -eq 1 ] || exit 2; install_check ;;
+  --is-installed) [ "$#" -eq 1 ] || exit 2; check_is_installed ;;
   --answer)
     shift
     ruling_lock_acquire || {
