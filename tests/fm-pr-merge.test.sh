@@ -42,27 +42,79 @@ make_case() {
   printf '%s\n' "$case_dir"
 }
 
-# gh-axi mock recording every invocation to a log file, and gh mock answering
-# headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
+# gh mock modelling the real `gh pr view` machine contract (verified against gh
+# 2.89.0): only fields the CLI actually exposes are answerable, any other field
+# fails with the CLI's own "Unknown JSON field" refusal, and -q is evaluated by
+# jq exactly as gh evaluates it. A query for a field GitHub does not implement -
+# `merged`, say - therefore fails here just as it fails in production.
+# Args: case_dir head_sha
+write_gh_mock() {
+  local case_dir=$1 head=$2
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'FM_GH_HEAD=%s\n' "$head"
+    cat <<'SH'
+printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+[ "${1:-} ${2:-}" = "pr view" ] || exit 0
+shift 2
+fields=
+query=
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --json) fields=${2:-} ; shift 2 ;;
+    -q|--jq) query=${2:-} ; shift 2 ;;
+    --repo|-R) shift 2 ;;
+    *) shift ;;
+  esac
+done
+# The subset of gh 2.89.0's `pr view` field set firstmate reads. mergedAt is
+# null until the forge merges the PR, and state is the only merge signal.
+state=OPEN
+merged_at=null
+if [ -n "${FM_TEST_GH_MERGED:-}" ] && [ -f "$FM_TEST_GH_MERGED" ]; then
+  state=MERGED
+  merged_at='"2026-08-05T00:00:00Z"'
+fi
+if [ -z "$fields" ]; then
+  echo 'Specify one or more comma-separated fields for `--json`:' >&2
+  exit 1
+fi
+IFS=,
+for field in $fields; do
+  case $field in
+    state|mergedAt|headRefOid) ;;
+    *) unset IFS ; printf 'Unknown JSON field: "%s"\n' "$field" >&2 ; exit 1 ;;
+  esac
+done
+unset IFS
+view=$(printf '{"state":"%s","mergedAt":%s,"headRefOid":"%s"}' \
+  "$state" "$merged_at" "$FM_GH_HEAD" | jq -c "{$fields}") || exit 1
+if [ -n "$query" ]; then
+  printf '%s' "$view" | jq -r "$query"
+else
+  printf '%s\n' "$view"
+fi
+SH
+  } > "$case_dir/fakebin/gh"
+  chmod +x "$case_dir/fakebin/gh"
+  : > "$case_dir/gh.log"
+}
+
+# gh-axi mock recording every invocation to a log file, paired with the gh mock
+# above so fm-pr-check.sh's pr_head lookup and fm-pr-merge.sh's merge-state
+# reconcile both read the real forge contract. Args: case_dir head_sha
 add_gh_mocks() {
   local case_dir=$1 head=$2
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-exit 0
-SH
-  cat > "$case_dir/fakebin/gh" <<SH
-#!/usr/bin/env bash
-case "\${1:-} \${2:-}" in
-  "pr view")
-    case " \$* " in
-      *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
-    esac
-    ;;
+case "${1:-} ${2:-}" in
+  "pr merge") : > "$FM_TEST_GH_MERGED" ;;
 esac
 exit 0
 SH
-  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+  chmod +x "$case_dir/fakebin/gh-axi"
+  write_gh_mock "$case_dir" "$head"
 }
 
 # gh-axi mock that fails the merge call but succeeds everything else, so a
@@ -77,11 +129,10 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
-  cat > "$case_dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+  chmod +x "$case_dir/fakebin/gh-axi"
+  # The failing gh-axi never marks the PR merged, so the shared gh mock answers
+  # from real forge truth: still OPEN, mergedAt still null.
+  write_gh_mock "$case_dir" 1111111111111111111111111111111111111111
 }
 
 run_pr_merge() {
@@ -89,6 +140,8 @@ run_pr_merge() {
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_GH_LOG="$case_dir/gh.log" \
+  FM_TEST_GH_MERGED="$case_dir/forge-merged" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
   rc=$?
@@ -99,8 +152,41 @@ run_pr_merge() {
   return "$rc"
 }
 
+test_post_merge_emit_failure_reconciles_without_second_merge() {
+  local case_dir rc stages merge_calls view_calls
+  case_dir=$(make_case post-merge-reconcile)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/date" <<'SH'
+#!/usr/bin/env bash
+count=0
+[ ! -f "$FM_TEST_DATE_COUNT" ] || count=$(cat "$FM_TEST_DATE_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" > "$FM_TEST_DATE_COUNT"
+[ "$count" -ne 2 ] || exit 1
+exec /bin/date "$@"
+SH
+  chmod +x "$case_dir/fakebin/date"
+
+  FM_TEST_DATE_COUNT="$case_dir/date-count" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/16 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+
+  expect_code 0 "$rc" "post-merge reconcile should recover the failed emit"
+  stages=$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" history task-x1 | cut -f2)
+  [ "$stages" = $'pr-open\nmerged' ] \
+    || fail "post-merge reconcile did not match forge truth: $stages"
+  merge_calls=$(grep -Fc 'pr merge 16 --repo example/repo --squash' "$case_dir/gh-axi.log")
+  view_calls=$(grep -Fc 'pr view 16 --repo example/repo --json state,mergedAt' "$case_dir/gh.log")
+  [ "$merge_calls" -eq 1 ] || fail "post-merge recovery invoked merge $merge_calls times"
+  [ "$view_calls" -eq 2 ] || fail "post-merge recovery did not re-read forge truth: $view_calls views"
+  pass "a failed post-merge emit reconciles from forge truth without repeating merge"
+}
+
 test_records_pr_and_head_before_merging() {
-  local case_dir rc
+  local case_dir rc stages
   case_dir=$(make_case records-before-merge)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
@@ -119,6 +205,9 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: pr_head= was not recorded"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
+  stages=$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" history task-x1 | cut -f2)
+  [ "$stages" = $'pr-open\nmerged' ] \
+    || fail "records-before-merge: PR check and merge did not emit their owned stages: $stages"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
 }
 
@@ -138,7 +227,33 @@ test_merge_failure_propagates_after_recording() {
   expect_code 1 "$rc" "merge-fails: fm-pr-merge should propagate the gh-axi merge failure"
   assert_grep 'pr=https://github.com/example/repo/pull/13' "$case_dir/state/task-x1.meta" \
     "merge-fails: pr= should already be recorded even though the merge itself failed"
+  [ "$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" current task-x1)" = pr-open ] \
+    || fail "merge-fails: failed merge must leave the work at pr-open"
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
+}
+
+test_corrupt_stage_ledger_refuses_before_forge_merge() {
+  local case_dir rc before
+  case_dir=$(make_case corrupt-stage-ledger)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+  printf 'malformed-existing-row\n' > "$case_dir/state/stage-transitions.tsv"
+  chmod 0600 "$case_dir/state/stage-transitions.tsv"
+  before=$(cat "$case_dir/state/stage-transitions.tsv")
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/14 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "corrupt stage ledger must stop the guarded merge path"
+  [ "$(cat "$case_dir/state/stage-transitions.tsv")" = "$before" ] \
+    || fail "guarded merge changed the corrupt stage ledger"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "guarded merge called the forge after stage-ledger refusal"
+  pass "a corrupt stage ledger refuses before any forge merge call"
 }
 
 test_extra_merge_args_forwarded() {
@@ -303,6 +418,8 @@ test_parses_pr_url_for_gh_axi() {
 
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
+test_corrupt_stage_ledger_refuses_before_forge_merge
+test_post_merge_emit_failure_reconciles_without_second_merge
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge

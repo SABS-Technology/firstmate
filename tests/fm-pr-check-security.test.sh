@@ -74,6 +74,14 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
+  *" state,mergedAt "*)
+    # The real gh pr view exposes no `merged` field: state carries the merge
+    # signal and mergedAt stays null until the PR actually lands.
+    [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
+    merged_at=null
+    [ "${FM_TEST_GH_MERGE_STATE:-OPEN}" != MERGED ] || merged_at=2026-08-05T00:00:00Z
+    printf '%s\t%s\n' "${FM_TEST_GH_MERGE_STATE:-OPEN}" "$merged_at"
+    ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"

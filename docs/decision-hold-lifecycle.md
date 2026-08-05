@@ -23,10 +23,57 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
-The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
+The `resolve` subcommand handles dedicated captain-kind holds and requires a decision file plus at least one existing dependent task whose structured `blocked-by` edge points to the hold.
+It enumerates the active home's blocked work through `tasks-axi list --blocked` and refuses while any task it finds still carries a `blocked-by` edge to the hold without being named by `--routed-to`, so the caller's list can no longer under-report dependent work.
+It requires the canonical regular `data/decisions/<hold-id>.md` record and verifies that every routed task's durable body or brief points to that exact path before any mutation.
+It requires ownership of the home session lock because direct concurrent backlog mutation is unsupported.
+It enumerates blocked dependents again before the first write and refuses if that inventory changed.
+Reply ingestion and resolution serialize program processes through one scoped ruling-resolution lock, but the captain-owned editor deliberately does not participate in that lock.
+The detector ingests complete `data/captain-replies.md` observations as ordered REPLY digests in `state/captain-ruling-log.tsv`.
+The resolver appends the identity's first matching COMMIT before its first backlog mutation, which is the snapshot commit point selected by the captain on 2026-08-05.
+That COMMIT remains authoritative for idempotent roll-forward after interruption even if a later editor observation appends another REPLY.
+A later REPLY is surfaced as `captain-ruling-revision <hold-id>` and becomes a new decision requiring explicit revocation of the committed ruling rather than an overwrite of it.
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
-A failed intermediate step leaves the hold open.
+
+## Resolver integrity and snapshot criterion (SC-1)
+
+A resolver log is accepted only when its storage properties and raw record grammar are positively validated.
+A log that fails that validation blocks ingestion, so the detector emits the identity-free `captain-ruling-error resolver-log-invalid` wake instead of any ruling, and every guarded resolution refuses until the log is repaired.
+Content-level agreement between a REPLY and a COMMIT is deliberately not revalidated by the detector.
+The program-owned writer already requires the last record for the hold to be a matching REPLY before it appends a COMMIT, while a non-program writer falls within the local ruling-channel trust gap accepted by the captain's 2026-08-04 ruling.
+
+The detector separately compares the canonical captain queue's open state with the resolver log's settled state.
+When the log already carries a COMMIT for a hold the queue still calls open and replyable, it reads both sources again after a bounded delay so the normal COMMIT-before-close roll-forward window can finish.
+A later REPLY on that hold is a separate observation and never withdraws the disagreement, so an interrupted resolution keeps its resume signal even once the reply has been edited.
+If the later queue and log observations still disagree, the detector emits one deduplicated privacy-safe `captain-ruling-error queue-log-disagreement <hold-id>` notification through the existing durable watcher acknowledgment machinery.
+It never includes answer text and never resolves the disagreement silently in favor of either source.
+
+The reply-edit window uses snapshot semantics under the captain's 2026-08-05 ruling.
+The ruling acted on is the complete reply the program observed when it appended the first COMMIT, and an editor change after that observation cannot retroactively replace it.
+The detector surfaces a later complete answer as a distinct revision wake even after the original hold closes.
+When one identity is both an interrupted resolution and a revision, the disagreement wake is delivered first and the revision wake follows on a later observation, because only the emitted notification is acknowledged.
+The lifecycle agent then creates a new captain-held decision for explicit revocation or retention; it never rewrites the committed decision record or reuses the resolved identity.
+
+The `resolve-item` subcommand handles a captain hold carried by ordinary work.
+It requires the canonical `data/decisions/<hold-id>.md` record, commits its matching reply under the same ruling-resolution lock, records the decision digest and pointer on the existing work item, and clears only the captain hold.
+It accepts no routed identities and contains no task-completion path, so resolving the decision cannot complete the underlying work or release dependencies that represent completion of that work.
+Such a retry rolls forward only while the same COMMIT remains last in the ruling log.
+
+## Accepted local ruling threat model
+
+The file-backed reply channel is not trusted or authenticated.
+This is an accepted weakness for a single-user machine where every agent already runs as the captain's UID and can modify `bin/` directly.
+A compromised local process can fabricate a ruling, and no signing key, shared secret, or separate authenticated channel is added because that would defend one door in an already-open house.
+The detection boundary is human detection: a fabricated record in `data/decisions/` does not match any ruling the captain remembers making.
+Captain rulings normally arrive in chat or Linear.
+The queue file is only a fallback and does not become the primary ruling path.
+
+`bin/fm-captain-ruling-check.sh` emits only privacy-safe hold identities from its watcher path.
+It reads complete `<hold-id>: <answer>` lines from captain-owned `data/captain-replies.md`, atomically ingests new answer digests into the program log, and never writes the editor surface.
+Its explicit `--answer <hold-id>` read returns the latest ingested complete answer while the hold is open or while a post-COMMIT revision is pending.
+On that wake, the lifecycle skill owns the semantic agent turn: it writes the exact answer to `data/decisions/<hold-id>.md`, then selects `resolve` for a dedicated captain-kind hold or `resolve-item` for a hold carried by ordinary work.
+The guarded resolver remains the only decision-resolution path, so a status-only change, missing work item, or missing dependency edge cannot close a dedicated captain decision or complete ordinary work.
 
 ## Structured read surfaces
 
@@ -43,11 +90,26 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Captain-ruling round-trip verification date: 2026-08-03.
+Review-finding regression verification date: 2026-08-04.
+Queue-versus-log disagreement regression verification date: 2026-08-05.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+The snapshot regression changes the editor surface immediately after the final ingest observation and before COMMIT, proves the observed answer routes and closes, and then proves the later edit emits a revision wake.
+Its staged mutant disables only the revision surface and becomes silent, which proves the wake is load-bearing.
+The interruption regression discovers both ruling-log and backlog changes, injects after every observed mutation, and distinguishes the pre-COMMIT REPLY position from COMMIT and every later position.
+Before COMMIT, a newly observed answer can replace the prepared record; from COMMIT onward, the committed answer rolls forward and the later edit becomes a new revocation decision.
+The legitimate partial-routing retry still finishes from the matching COMMIT, while a retry carrying a different decision identity remains refused.
+
+## Interruption-probe observation boundary
+
+The committed resolver regression observes two files: net changes to `data/backlog.md` around every synchronous `tasks-axi` child call, and net changes to `state/captain-ruling-log.tsv` around the program's append writer.
+Its process boundary is the resolver process and those direct child calls; external processes, direct writer bypasses, and mutations to other files are not observed.
+Its timing boundary is immediately before and after each call returns; a write-and-revert inside one call leaves no net durable change and is unobservable by construction.
+These residual classes are accepted under firstmate's 2026-08-05 ruling rather than covered by a filesystem watcher or write-during-call journal.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -62,6 +124,45 @@ ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
+ok - a detected ruling becomes durable dependent work before its hold closes
+ok - re-hold rejects malformed identity collisions and preserves canonical idempotence
+ok - resolve requires the canonical record and exact routed-work pointer
+ok - resolve requires its session lock and refuses a changed dependent set
+ok - resolve refuses every non-affirmative captain-answer read without changing holds or dependents
+ok - resolve discovers every still-blocked dependent and refuses an undisclosed one
+ok - resolve re-reads the captain ruling and refuses a superseded decision record
+ok - the last observed answer commits, while a later edit becomes a distinct revocation decision
+ok - unterminated editor writes cannot append, route, or close; newline completion resumes
+ok - mutation discovery is conservative and verb-agnostic
+ok - every observed mutation interruption preserves the committed snapshot and surfaces a later edit
+ok - every ordinary-work mutation interruption preserves the snapshot and surfaces a later edit
+ok - in-flight captain holds generate, wake, read, record, route, and resolve
+ok - ordinary-kind replies resolve only the captain hold and never complete the work item
+ok - an exact retry finishes routing a committed decision when no reply changed
+ok - multi-answer history stays collapsed and preserves committed retry semantics
+ok - a partial-resolve retry carrying a different decision is still refused
+ok - ruling and revision wakes load the single lifecycle owner and preserve close ordering
+
+$ bash tests/fm-captain-ruling-check.test.sh
+ok - one private single-link global check is registered
+ok - the global ruling detector identity is reserved before task check mutation
+ok - global install preserves legacy task bytes and guarded teardown releases the identity
+ok - new rulings wake once while malformed, unchanged, and resolved ids stay silent
+ok - the check finishes under 5s and leaves captain-replies.md byte-identical
+ok - discarded detection retries, then durable append acknowledgment dedupes
+ok - byte, encoding, size, type, and read failures wake durably; absence repair restores normal detection
+ok - all storage and record-boundary guards kill their isolated mutants
+ok - a post-COMMIT edit wakes as a readable new decision after the old hold closes
+ok - a persistent open-versus-COMMIT disagreement wakes once durably without input mutation
+ok - a COMMIT-to-close roll-forward window stays silent after the later queue check agrees
+ok - a settled queue and COMMIT log remain silent
+ok - an edited reply never withdraws the interrupted post-COMMIT resume signal
+ok - disabling the disagreement surface turns the persistent-disagreement assertion red
+ok - a watcher with Perl and both timeout runners genuinely absent wakes durably before operation
+ok - ordinary-kind captain holds emit ruling wakes and exact answers
+ok - answer reader returns the latest complete open ruling without changing captain input
+ok - reply ingestion serializes with active ruling resolution
+ok - file-backed ruling channel declares its accepted untrusted boundary
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization preserves strict roles and resolves every blocker compatibly
@@ -85,7 +186,7 @@ fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 
 $ git diff --check
 (no output)
-
-$ for test_script in tests/*.test.sh; do bash "$test_script"; done
-ALL 71 TEST SCRIPTS PASSED
 ```
+
+This block records only the targeted commands above, each run and observed directly.
+It deliberately carries no whole-suite aggregate result; the suite total is owned by the test runner, not by this document.

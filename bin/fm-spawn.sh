@@ -105,6 +105,9 @@
 # Per-harness turn-end hooks are installed automatically; some live outside the worktree.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
+# A ship or scout durably enters its initial implementation or investigation
+# stage before endpoint, worktree, metadata, artifact, or launch mutation;
+# persistent secondmates are not task work and emit none.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
@@ -777,6 +780,12 @@ real_path_or_raw() {  # <path>
   fi
 }
 
+if [ "$KIND" != secondmate ]; then
+  WORK_STAGE=implementation
+  [ "$KIND" != scout ] || WORK_STAGE=investigation
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" "$WORK_STAGE"
+fi
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -1284,7 +1293,10 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-} > "$STATE/$ID.meta"
+} > "$STATE/$ID.meta" || {
+  echo "error: could not publish task metadata: $STATE/$ID.meta" >&2
+  exit 1
+}
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")

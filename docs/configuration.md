@@ -10,8 +10,8 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
-`state/` holds volatile runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, away-mode state, generated X-mode artifacts, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
+`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, scout reports, the generated open-captain-decision surface the captain can answer outside chat, and exact captain-ruling records under `data/decisions/`.
+`state/` holds volatile runtime records such as task metadata, append-only status events, the append-only work-stage ledger, endpoint signals, watcher and wake-queue coordination, away-mode state, generated X-mode artifacts, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the guarded exceptions in `AGENTS.md`.
 
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
@@ -37,6 +37,22 @@ Bootstrap requires compatible `tasks-axi` on every profile; see "Toolchain" belo
 Set the local, gitignored `config/backlog-backend` file to `manual` to force manual backlog editing and suppress the verbose `BOOTSTRAP_INFO: tasks-axi available` fact, not missing-tool reporting.
 Absent or `tasks-axi` selects the default tasks-axi backend.
 The file format is unchanged in both modes; tasks-axi and manual edits produce the same `## In flight`, `## Queued`, and `## Done` sections.
+
+## Linear projection (config/linear-projection.json)
+
+`config/linear-projection.json` is the local, gitignored workspace contract for the one-way Linear projection owned by `bin/fm-linear-projection.sh`.
+The file must contain exactly `schema`, `workspace_id`, `team_id`, `untracked_state_id`, `stage_state_ids`, and `approved_destination`; `schema` is `fm-linear-projection-config.v1`, `workspace_id` is a UUID, and `stage_state_ids` maps every stage emitted by `bin/fm-stage.sh` to the target team's Linear workflow-state id.
+`approved_destination` must contain exactly `attested: true`, `workspace_id`, and `team_id`, and both ids must equal the mutation destination in the same config before any transport can run.
+The API credential remains only in `LINEAR_API_KEY` and must never be placed in this file.
+Projection egress is fail-closed unless `FM_LINEAR_PROJECTION_ENABLED=1`, the credential is present, and this complete workspace contract is valid.
+The projection journal is private `state/linear-projection.json`; it stores deterministic remote ids, source digests, monotonic per-item revisions, attachment receipts, and archive tombstones, but no credential or vendor response body.
+Before deleting task metadata, teardown atomically retains any validated canonical GitHub PR identity in the egress-neutral receipt owned by `bin/fm-teardown.sh`; first sync consults that receipt after live metadata and before the projection journal without invoking transport during cleanup.
+Firstmate records remain authoritative: the projection reads the canonical `fm-captain-queue.sh --json` result, the backlog and archive, and the stage ledger, while only Linear and its private journal can be mutated.
+GitHub pull requests are Linear attachments with `linkKind: links`; the projection never supplies `parentId`, so captain decisions remain peer issues linked to their PRs rather than PR sub-items.
+Both subcommands exec `python3`, which stays outside the universal toolchain below because the projection is opt-in and off by default.
+After a workspace exists, the live handoff is one command with the local config in place: `FM_LINEAR_PROJECTION_ENABLED=1 LINEAR_API_KEY=<key> bin/fm-linear-projection.sh sync`.
+Run `bin/fm-linear-projection.sh schema-check` separately to perform the explicit unauthenticated live-schema validation without enabling projection egress.
+Its regression is opt-in for the same reason: `FM_LINEAR_LIVE_SCHEMA=1 tests/fm-linear-schema-check-live.test.sh` reaches Linear, while the default suite runs `tests/fm-linear-projection.test.sh` entirely offline.
 
 ## Runtime backend (config/backend / FM_BACKEND)
 
@@ -237,9 +253,9 @@ Secondmate homes inherit this file from the primary, so a secondmate's own crewm
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.
 It installs automatically supported tools only after you say go; manual-only tools remain for you to install from the printed instructions.
 Required tools come in two parts: a universal toolchain every home needs regardless of backend, and a per-backend delta that follows the runtime backend actually resolved for this home.
-The universal toolchain is node, git, gh with GitHub auth via `gh auth login`, no-mistakes v1.31.2 or newer, gh-axi, chrome-devtools-axi, lavish-axi, compatible tasks-axi per "Backlog backend" above, and quota-axi.
+The universal toolchain is node, git, gh with GitHub auth via `gh auth login`, perl, no-mistakes v1.31.2 or newer, gh-axi, chrome-devtools-axi, lavish-axi, compatible tasks-axi per "Backlog backend" above, and quota-axi.
 This section is the single owner of that universal toolchain list; backend guides' prerequisites point here and add only their backend-specific tools.
-In that list, no-mistakes runs the validation pipeline, gh-axi, chrome-devtools-axi, and lavish-axi cover GitHub, browser, and rich-review operations, and tasks-axi plus quota-axi back backlog mutations and quota-aware array dispatch.
+In that list, no-mistakes runs the validation pipeline, gh-axi, chrome-devtools-axi, and lavish-axi cover GitHub, browser, and rich-review operations, tasks-axi plus quota-axi back backlog mutations and quota-aware array dispatch, and perl provides the portable locking, timeout, and failure-atomic append primitives the watcher and its logs depend on.
 The per-backend delta is required only for the backend resolved from `FM_BACKEND`, then `config/backend`, then runtime auto-detection, then default `tmux`, so a home is never told to install a tool an inactive backend or feature would need.
 That delta is owned in code by `fm_backend_required_tools` in `bin/fm-backend.sh`: the resolved backend's own session-provider CLI (`tmux`, `herdr`, `zellij`, `orca`, or `cmux`), `jq` for the JSON-emitting experimental adapters (`herdr`, `zellij`, `cmux`) whose spawn and liveness paths parse the backend's JSON output, and the `treehouse` worktree provider for every session-provider-only backend (`tmux`, `herdr`, `zellij`, `cmux`).
 Backend tool availability uses the adapter's own executable resolver, so bootstrap and spawn agree on supported non-`PATH` locations such as cmux's bundled CLI.
@@ -357,6 +373,10 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
+FM_LINEAR_PROJECTION_ENABLED=  # must be exactly 1 to authorize a Linear projection sync; absent is fail-closed
+LINEAR_API_KEY=          # Linear API credential for projection sync; never written to config, state, logs, errors, or summaries
+FM_LINEAR_TRANSPORT=     # optional injected GraphQL transport executable for tests or alternate egress
+FM_GITHUB_STATUS_TRANSPORT=  # optional injected GitHub PR-status reader for projection tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for the Linux process-identity read in fm-wake-lib.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)

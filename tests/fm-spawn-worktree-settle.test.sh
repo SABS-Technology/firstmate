@@ -45,11 +45,15 @@ case "$*" in
     exit 0
     ;;
 esac
+[ -z "${FM_FAKE_BACKEND_ACTION_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_BACKEND_ACTION_LOG"
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
-  send-keys) exit 0 ;;
+  send-keys)
+    [ -z "${FM_FAKE_SEND_KEYS_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_SEND_KEYS_LOG"
+    exit 0
+    ;;
 esac
 exit 0
 SH
@@ -90,14 +94,17 @@ EOF
 
 run_settle_spawn() {
   local id=$1
+  shift
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
+    FM_FAKE_SEND_KEYS_LOG="$HOME_DIR/send-keys.log" \
+    FM_FAKE_BACKEND_ACTION_LOG="$HOME_DIR/backend-actions.log" \
     PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+    "$SPAWN" "$id" "$PROJ_DIR" "$@" 2>&1
 }
 
 # A single stale first read (the exact incident) must not be accepted: the
@@ -117,6 +124,10 @@ test_single_stale_first_read_is_not_accepted() {
     "meta did not record the settled worktree"
   assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
     "meta wrongly recorded the transient stale path as the worktree"
+  ! grep -q '^stage=' "$HOME_DIR/state/$id.meta" \
+    || fail "spawn folded the new stage axis into existing task metadata"
+  [ "$(FM_STATE_OVERRIDE="$HOME_DIR/state" "$ROOT/bin/fm-stage.sh" current "$id")" = implementation ] \
+    || fail "spawn did not emit the task's initial implementation stage"
   pass "a single transient stale pane_current_path read is not accepted as the worktree"
 }
 
@@ -141,7 +152,96 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+test_scout_spawn_emits_investigation() {
+  local rec id out status
+  id=settle-scout-z3
+  rec=$(make_settle_case settle-scout "$id" 0)
+  read_settle_record "$rec"
+
+  out=$(run_settle_spawn "$id" --scout)
+  status=$?
+  expect_code 0 "$status" "scout spawn should succeed"
+  assert_contains "$out" "kind=scout" "scout spawn did not report its task kind"
+  [ "$(FM_STATE_OVERRIDE="$HOME_DIR/state" "$ROOT/bin/fm-stage.sh" current "$id")" = investigation ] \
+    || fail "scout spawn did not emit the initial investigation stage"
+  pass "a scout spawn enters investigation rather than implementation"
+}
+
+assert_no_spawn_action_precedes_stage() {  # <task-id> <failure-class>
+  local id=$1 failure=$2 action
+  for action in endpoint-creation worktree-allocation task-artifact-install metadata-publication agent-launch; do
+    case "$action" in
+      endpoint-creation)
+        if [ -f "$HOME_DIR/backend-actions.log" ]; then
+          assert_no_grep 'new-session' "$HOME_DIR/backend-actions.log" \
+            "$failure stage failure created a backend container"
+          assert_no_grep 'new-window' "$HOME_DIR/backend-actions.log" \
+            "$failure stage failure created a backend endpoint"
+        fi
+        ;;
+      worktree-allocation)
+        if [ -f "$HOME_DIR/backend-actions.log" ]; then
+          assert_no_grep 'treehouse get' "$HOME_DIR/backend-actions.log" \
+            "$failure stage failure requested a worktree"
+        fi
+        ;;
+      task-artifact-install)
+        assert_absent "$WT_DIR/.claude/settings.local.json" \
+          "$failure stage failure installed a task hook"
+        assert_absent "$HOME_DIR/state/$id.pi-ext.ts" \
+          "$failure stage failure installed a state-side task artifact"
+        ;;
+      metadata-publication)
+        assert_absent "$HOME_DIR/state/$id.meta" \
+          "$failure stage failure published task metadata"
+        ;;
+      agent-launch)
+        assert_absent "$HOME_DIR/send-keys.log" \
+          "$failure stage failure handed input to an agent"
+        ;;
+    esac
+  done
+}
+
+test_stage_transition_precedes_every_spawn_action() {
+  local failure rec id out status ledger
+  for failure in unsafe-ledger malformed-ledger clock append-writer; do
+    id="settle-stage-${failure}-z4"
+    rec=$(make_settle_case "settle-stage-$failure" "$id" 0)
+    read_settle_record "$rec"
+    ledger="$HOME_DIR/state/stage-transitions.tsv"
+    case "$failure" in
+      unsafe-ledger)
+        printf 'older-task\timplementation\t2026-08-05T00:00:00Z\n' > "$ledger"
+        chmod 0644 "$ledger"
+        ;;
+      malformed-ledger)
+        printf 'malformed-existing-row\n' > "$ledger"
+        chmod 0600 "$ledger"
+        ;;
+      clock)
+        printf '#!/usr/bin/env bash\nexit 71\n' > "$FAKEBIN_DIR/date"
+        chmod +x "$FAKEBIN_DIR/date"
+        ;;
+      append-writer)
+        printf '#!/usr/bin/env bash\nexit 72\n' > "$FAKEBIN_DIR/perl"
+        chmod +x "$FAKEBIN_DIR/perl"
+        ;;
+    esac
+
+    set +e
+    out=$(run_settle_spawn "$id")
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || fail "$failure did not fail stage emission"
+    assert_no_spawn_action_precedes_stage "$id" "$failure"
+  done
+  pass "every stable stage failure refuses before every irreversible spawn action"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_scout_spawn_emits_investigation
+test_stage_transition_precedes_every_spawn_action
 
 echo "# all fm-spawn-worktree-settle tests passed"

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
 # exact pr_head=<sha> when available, atomically arm a static merge poll, and
-# append one idempotent paused: event declaring the bounded merge wait.
+# append one idempotent paused: event declaring the bounded merge wait, and emit
+# the independent pr-open work stage.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -23,7 +24,8 @@ if [ "$#" -ne 2 ]; then
 fi
 ID=$1
 RAW_URL=$2
-if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
+if ! fm_pr_task_id_valid "$ID" || [ "$ID" = captain-ruling ] \
+  || ! fm_pr_url_parse "$RAW_URL"; then
   echo "error: invalid PR check request" >&2
   exit 2
 fi
@@ -151,4 +153,5 @@ if ! command -v perl >/dev/null 2>&1 || ! perl -MFcntl=:DEFAULT -e '
   exit 1
 fi
 
+FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" pr-open
 printf 'armed: state/%s.check.sh\n' "$ID"

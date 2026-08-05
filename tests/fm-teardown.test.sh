@@ -59,7 +59,8 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
 REAL_GIT_FOR_TEST=$(command -v git)
-export REAL_GIT_FOR_TEST
+REAL_STAT_FOR_TEST=$(command -v stat)
+export REAL_GIT_FOR_TEST REAL_STAT_FOR_TEST
 
 # Build a fresh sandbox for one test case. Sets up:
 #   $CASE/state/        - firstmate state dir (with a fresh watcher beacon)
@@ -76,14 +77,16 @@ make_case() {
 
   # Mocks for the post-check teardown steps. Refuse logic exits before these
   # run; the ALLOW cases need them so the script can complete cleanly.
-  cat > "$fakebin/treehouse" <<'SH'
+cat > "$fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
 # `treehouse return --force <wt>`: succeed silently.
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
 exit 0
 SH
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 # tmux kill-window etc.: succeed silently.
+[ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 exit 0
 SH
   # Default gh-axi mock: no PR is associated with the branch, and viewing any PR
@@ -225,7 +228,7 @@ SH
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
-      *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
+      *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' 'MERGED' '$head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
     esac
     ;;
@@ -445,8 +448,13 @@ add_stat_error() {
   local case_dir=$1
   cat > "$case_dir/fakebin/stat" <<'SH'
 #!/usr/bin/env bash
-echo "stat: simulated failure" >&2
-exit 1
+case "${1:-} ${2:-}" in
+  '-f %m'|'-c %Y')
+    echo "stat: simulated mtime failure" >&2
+    exit 1
+    ;;
+esac
+exec "$REAL_STAT_FOR_TEST" "$@"
 SH
   chmod +x "$case_dir/fakebin/stat"
 }
@@ -493,6 +501,8 @@ run_teardown() {
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+  FM_FAKE_TMUX_LOG="$case_dir/tmux.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" task-x1 "$@"
 }
@@ -511,23 +521,122 @@ test_local_only_fork_remote_allows() {
 
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
+  [ "$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" current task-x1)" = complete ] \
+    || fail "fork-allow: successful teardown did not retain the complete stage event"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "fork-allow: stage history survival must not retain task metadata"
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
 }
 
+assert_no_teardown_action_precedes_stage() {  # <case-dir> <failure-class> <meta-digest> <head>
+  local case_dir=$1 failure=$2 meta_digest=$3 head=$4 action
+  for action in branch-discard task-artifact-removal worktree-return runtime-kill metadata-deletion volatile-state-cleanup; do
+    case "$action" in
+      branch-discard)
+        [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head" ] \
+          && [ "$(git -C "$case_dir/wt" branch --show-current)" = fm/task-x1 ] \
+          || fail "$failure stage failure detached or deleted the task branch"
+        ;;
+      task-artifact-removal)
+        assert_present "$case_dir/wt/.claude/settings.local.json" \
+          "$failure stage failure removed a task hook"
+        ;;
+      worktree-return)
+        assert_absent "$case_dir/treehouse.log" \
+          "$failure stage failure returned the worktree"
+        ;;
+      runtime-kill)
+        assert_absent "$case_dir/tmux.log" \
+          "$failure stage failure killed the runtime endpoint"
+        ;;
+      metadata-deletion)
+        [ "$(shasum -a 256 "$case_dir/state/task-x1.meta")" = "$meta_digest" ] \
+          || fail "$failure stage failure changed task metadata"
+        ;;
+      volatile-state-cleanup)
+        assert_present "$case_dir/state/task-x1.status" \
+          "$failure stage failure removed retry state"
+        ;;
+    esac
+  done
+}
+
+test_stage_transition_precedes_every_teardown_action() {
+  local failure case_dir ledger meta_digest head rc
+  for failure in unsafe-ledger malformed-ledger clock append-writer; do
+    case_dir=$(make_case "stage-$failure")
+    write_meta "$case_dir" local-only ship
+    mkdir -p "$case_dir/wt/.claude"
+    printf '%s\n' hook > "$case_dir/wt/.claude/settings.local.json"
+    printf 'working: fixture\n' > "$case_dir/state/task-x1.status"
+    ledger="$case_dir/state/stage-transitions.tsv"
+    case "$failure" in
+      unsafe-ledger)
+        printf 'older-task\timplementation\t2026-08-05T00:00:00Z\n' > "$ledger"
+        chmod 0644 "$ledger"
+        ;;
+      malformed-ledger)
+        printf 'malformed-existing-row\n' > "$ledger"
+        chmod 0600 "$ledger"
+        ;;
+      clock)
+        printf '#!/usr/bin/env bash\nexit 71\n' > "$case_dir/fakebin/date"
+        chmod +x "$case_dir/fakebin/date"
+        ;;
+      append-writer)
+        printf '#!/usr/bin/env bash\nexit 72\n' > "$case_dir/fakebin/perl"
+        chmod +x "$case_dir/fakebin/perl"
+        ;;
+    esac
+    meta_digest=$(shasum -a 256 "$case_dir/state/task-x1.meta")
+    head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+    set +e
+    run_teardown "$case_dir" --force > "$case_dir/stage.out" 2> "$case_dir/stage.err"
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "$failure did not fail stage emission"
+    if [ -f "$ledger" ]; then
+      assert_no_grep $'\tcomplete\t' "$ledger" \
+        "$failure recorded complete despite a failed stage append"
+    fi
+    assert_no_teardown_action_precedes_stage "$case_dir" "$failure" "$meta_digest" "$head"
+  done
+  pass "every stable stage failure refuses before every irreversible teardown action"
+}
+
 test_teardown_prompts_tasks_axi_done_when_compatible() {
-  local case_dir out
+  local case_dir out receipt transport transport_called
   case_dir=$(make_case tasks-axi-reminder)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   add_compatible_tasks_axi "$case_dir"
+  transport="$case_dir/fake-linear-transport"
+  transport_called="$case_dir/linear-transport.called"
+  cat > "$transport" <<'SH'
+#!/usr/bin/env bash
+: > "$FM_LINEAR_TRANSPORT_CALLED"
+exit 97
+SH
+  chmod +x "$transport"
 
-  out=$(run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
+  out=$(FM_LINEAR_TRANSPORT="$transport" \
+    FM_LINEAR_TRANSPORT_CALLED="$transport_called" run_teardown "$case_dir") \
+    || fail "teardown failed with compatible tasks-axi"
+  receipt="$case_dir/state/linear-pr-receipts/task-x1.receipt"
   printf '%s\n' "$out" | grep -F 'tasks-axi done task-x1 --pr https://github.com/example/repo/pull/7' >/dev/null \
     || fail "teardown did not prompt tasks-axi done: $out"
   printf '%s\n' "$out" | grep -F 'tasks-axi ready' >/dev/null \
     || fail "teardown did not prompt tasks-axi ready: $out"
   printf '%s\n' "$out" | grep -F 'check date gates' >/dev/null \
     || fail "teardown did not preserve date-gate check: $out"
+  assert_present "$receipt" "teardown deleted PR metadata without publishing its receipt"
+  [ "$(cat "$receipt")" = $'fm-linear-pr-receipt.v1\ntask_id=task-x1\npr_url=https://github.com/example/repo/pull/7' ] \
+    || fail "teardown published a malformed PR receipt"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "teardown retained task metadata after publishing the PR receipt"
+  assert_absent "$transport_called" \
+    "egress-neutral receipt publication invoked the Linear transport"
   printf '%s\n' "$out" | grep -F 'keep Done to the 10 most recent' >/dev/null \
     && fail "teardown kept manual Done pruning in compatible tasks-axi prompt: $out"
   pass "teardown prompts tasks-axi backlog refresh when compatible"
@@ -671,7 +780,7 @@ test_squash_merged_pr_allows_when_head_ancestor_of_pr_head() {
 }
 
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
-  local case_dir rc local_head pr_head
+  local case_dir rc local_head pr_head receipt transport transport_called
   case_dir=$(make_case no-pr-branch-discovery)
   write_meta "$case_dir" no-mistakes ship
   # Reproduces the real false-refusal report exactly, with NO pr=/pr_head=
@@ -692,14 +801,28 @@ test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
   ! grep -qE '^(pr|pr_head)=' "$case_dir/state/task-x1.meta" \
     || fail "no-pr-branch-discovery: test setup bug, meta unexpectedly has a pr= line"
 
+  transport="$case_dir/fake-linear-transport"
+  transport_called="$case_dir/linear-transport.called"
+  cat > "$transport" <<'SH'
+#!/usr/bin/env bash
+: > "$FM_LINEAR_TRANSPORT_CALLED"
+exit 97
+SH
+  chmod +x "$transport"
   set +e
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  FM_LINEAR_TRANSPORT="$transport" FM_LINEAR_TRANSPORT_CALLED="$transport_called" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 0 "$rc" "no-pr-branch-discovery: teardown should succeed by discovering the merged PR from the branch name"
   ! grep -q REFUSED "$case_dir/stderr" || fail "no-pr-branch-discovery: teardown printed a REFUSED line"
-  pass "teardown discovers a merged PR by branch name and tears down when no pr= was ever recorded"
+  receipt="$case_dir/state/linear-pr-receipts/task-x1.receipt"
+  [ "$(cat "$receipt")" = $'fm-linear-pr-receipt.v1\ntask_id=task-x1\npr_url=https://github.com/example/repo/pull/7' ] \
+    || fail "branch-discovered PR did not publish its canonical receipt"
+  assert_absent "$transport_called" \
+    "branch-discovered receipt publication invoked the Linear transport"
+  pass "branch-discovered merged PR retains an atomic egress-neutral receipt"
 }
 
 test_squash_merged_pr_allows_replayed_unpushed_patch() {
@@ -1372,6 +1495,7 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
 }
 
 test_local_only_fork_remote_allows
+test_stage_transition_precedes_every_teardown_action
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses

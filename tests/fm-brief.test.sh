@@ -77,6 +77,37 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+test_stage_protocol_is_separate_from_status() {
+  local home ship scout charter
+  home="$TMP_ROOT/stage-protocol-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" stage-ship some-proj >/dev/null 2>&1
+  ship="$home/data/stage-ship/brief.md"
+  assert_grep "Work stage is a separate axis from those supervision states." "$ship" \
+    "ship brief collapsed work stage into supervision state"
+  assert_grep "fm-stage.sh' emit 'stage-ship' {stage}" "$ship" \
+    "ship brief did not embed the stage transition command"
+  assert_grep "moves between \`implementation\` and \`validation\`" "$ship" \
+    "ship brief did not name its worker-owned transitions"
+  assert_grep "States: working, needs-decision, blocked, paused, done, failed." "$ship" \
+    "ship brief changed the supervision vocabulary"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" stage-scout some-proj --scout >/dev/null 2>&1
+  scout="$home/data/stage-scout/brief.md"
+  assert_grep "Spawn recorded the initial" "$scout" \
+    "scout brief omitted its initial investigation stage"
+  assert_grep "fm-stage.sh' emit 'stage-scout' {stage}" "$scout" \
+    "scout brief did not embed the stage transition command"
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER=ops \
+    "$ROOT/bin/fm-brief.sh" stage-charter --secondmate --no-projects >/dev/null 2>&1
+  charter="$home/data/stage-charter/brief.md"
+  assert_no_grep "fm-stage.sh" "$charter" \
+    "persistent secondmate charter was incorrectly modeled as task work"
+  pass "fm-brief: work-stage emission stays separate from the supervision status protocol"
+}
+
 test_ship_claim_proof_discipline() {
   local home id id_proj proj brief
   home="$TMP_ROOT/claim-proof-home"
@@ -658,6 +689,7 @@ test_preflight_decisions_are_firstmate_fillable
 test_preflight_section_absent_from_secondmate_charter
 test_needs_decision_carries_blast_radius_framing
 test_ship_modes_generate_clean_briefs
+test_stage_protocol_is_separate_from_status
 test_ship_claim_proof_discipline
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
