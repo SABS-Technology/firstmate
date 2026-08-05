@@ -124,12 +124,26 @@ test_ship_claim_proof_discipline() {
     "no-mistakes brief forbids fixing a listed finding's own class, not just an unlisted one"
   assert_grep "The defect class a listed finding belongs to is never such a generalization" "$brief" \
     "no-mistakes brief lets claim-proof escalation override rule 5's class-closure requirement"
-  assert_grep "escalating it instead of closing it is the instance-only closure rule 5 forbids" "$brief" \
+  assert_grep "escalating that class instead of closing it there is the instance-only closure rule 5 forbids" "$brief" \
     "no-mistakes brief does not name instance-only closure as the failure escalation would cause"
-  assert_grep "A defect class that a listed finding does belong to is not this case: it stays in the round and you close it there." "$brief" \
+  assert_grep "A defect class that a listed finding does belong to is not this case: it stays in the round and you close it there" "$brief" \
     "claim-proof item 2 does not keep a listed finding's class in-round"
   assert_no_grep "scope growth (rules 3 and 5)." "$brief" \
     "no-mistakes brief still cites rule 5 as blanket authority against closing a listed finding's class"
+  # The claim-proof section cites rule 5, so it must carry rule 5's own two
+  # qualifiers: the rules-2/3 fix-eligible boundary and the escalation that a
+  # purpose-defeating deferral requires. Otherwise it demands in-round closure
+  # rule 5 defers, and forbids the escalation rule 5 mandates.
+  assert_grep "within the fix-eligible boundary rules 2 and 3 set" "$brief" \
+    "claim-proof note demands class closure past the boundary rules 2 and 3 set"
+  assert_grep "a same-class instance rules 2 or 3 defer remains a follow-up and the class still counts as completely closed" "$brief" \
+    "claim-proof note reads a rules-2-or-3 deferral as the incomplete closure rule 5 forbids"
+  assert_grep "a deferral rule 5 calls purpose-defeating goes to firstmate rather than into a silent follow-up" "$brief" \
+    "claim-proof note forbids the escalation rule 5 requires for a purpose-defeating deferral"
+  assert_grep "as far as rules 2 and 3 make its instances fix-eligible" "$brief" \
+    "claim-proof item 2 keeps a listed finding's class in-round past the fix-eligible boundary"
+  assert_grep "one whose deferral would defeat the purpose of the change goes to firstmate as rule 5 requires" "$brief" \
+    "claim-proof item 2 leaves a purpose-defeating deferral no route to firstmate"
 
   assert_grep "record it in the PR body as known-open" "$home/data/claim-proof-direct/brief.md" \
     "direct-PR brief must name the PR body as the durable known-open surface"
@@ -151,6 +165,10 @@ test_ship_claim_proof_discipline() {
       "$id: brief qualifies escalation on a findings list this mode never produces"
     assert_no_grep "it stays in the round and you close it there" "$brief" \
       "$id: brief tells a crewmate with no review round to close a defect class in-round"
+    assert_no_grep "fix-eligible" "$brief" \
+      "$id: brief bounds its scope by a severity rubric this mode never receives"
+    assert_no_grep "purpose-defeating" "$brief" \
+      "$id: brief leaked the gate-only purpose-defeating deferral escalation"
     assert_no_grep "rules 3 and 5" "$brief" \
       "$id: brief cites gate-response rules its scaffold never defines"
     assert_no_grep "gate-response" "$brief" \
