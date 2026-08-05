@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Generate data/pending-decisions.md from the canonical captain queue.
 #
-# The target must already contain each marker exactly once on its own line:
+# An absent target is atomically initialized with each marker exactly once on its own line:
 #   <!-- BEGIN GENERATED: captain-queue -->
 #   <!-- END GENERATED: captain-queue -->
 #   <!-- BEGIN APPEND-ONLY: captain-replies -->
 #   <!-- END APPEND-ONLY: captain-replies -->
+# A present target must already contain the same four-marker scaffold.
 # The captain-queue region is replaced atomically from fm-captain-queue.sh
 # --json. Everything outside it is copied byte-for-byte, except that missing
 # `<hold-task-id>: ` prefixes are appended to the captain-replies region.
@@ -53,22 +54,41 @@ command -v jq >/dev/null 2>&1 || fail "jq not found"
 command -v perl >/dev/null 2>&1 || fail "perl not found"
 [ -x "$SCRIPT_DIR/fm-captain-queue.sh" ] || fail "canonical captain queue is unavailable"
 [ -d "$DATA_DIR" ] && [ ! -L "$DATA_DIR" ] || fail "target directory is unavailable"
+data_device=$(fm_pr_file_device "$DATA_DIR") || fail "target directory is unavailable"
+TMP_DIR=
+PUBLISH_TMP=
+SCAFFOLD_TMP=
+cleanup() {
+  [ -z "$SCAFFOLD_TMP" ] || rm -f -- "$SCAFFOLD_TMP"
+  [ -z "$PUBLISH_TMP" ] || rm -f -- "$PUBLISH_TMP"
+  [ -z "$TMP_DIR" ] || rm -rf -- "$TMP_DIR"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+if [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
+  umask 077
+  SCAFFOLD_TMP=$(mktemp "$DATA_DIR/.pending-decisions-scaffold.XXXXXX") \
+    || fail "atomic scaffold preparation failed"
+  if ! printf '# Captain decisions\n\n%s\n%s\n\n%s\n%s\n' \
+    "$REPLY_BEGIN" "$REPLY_END" "$QUEUE_BEGIN" "$QUEUE_END" > "$SCAFFOLD_TMP" \
+    || ! chmod 0644 "$SCAFFOLD_TMP" \
+    || ! fm_pr_private_file_valid "$SCAFFOLD_TMP" 644 "$data_device"; then
+    fail "atomic scaffold preparation failed"
+  fi
+  if ! ln -- "$SCAFFOLD_TMP" "$TARGET" 2>/dev/null; then
+    fail "target changed during generation; refusing to overwrite captain input"
+  fi
+  rm -f -- "$SCAFFOLD_TMP"
+  SCAFFOLD_TMP=
+fi
 [ -f "$TARGET" ] && [ ! -L "$TARGET" ] || fail "target is not a regular file"
 [ "$(fm_pr_file_link_count "$TARGET")" = 1 ] || fail "target must be single-link"
-data_device=$(fm_pr_file_device "$DATA_DIR") || fail "target directory is unavailable"
 target_device=$(fm_pr_file_device "$TARGET") || fail "target is unavailable"
 [ "$data_device" = "$target_device" ] || fail "target is on a different device"
 target_mode=$(fm_pr_file_mode "$TARGET") || fail "target mode is unavailable"
 target_identity=$(fm_pr_file_identity "$TARGET") || fail "target identity is unavailable"
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-pending-decisions.XXXXXX") \
   || fail "temporary workspace is unavailable"
-PUBLISH_TMP=
-cleanup() {
-  [ -z "$PUBLISH_TMP" ] || rm -f -- "$PUBLISH_TMP"
-  rm -rf -- "$TMP_DIR"
-}
-trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
 ORIGINAL="$TMP_DIR/original.md"
 CURRENT_GENERATED="$TMP_DIR/current-generated.md"
 CURRENT_REPLIES="$TMP_DIR/current-replies.md"

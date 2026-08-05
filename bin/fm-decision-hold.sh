@@ -65,6 +65,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 RULING_CHECK="$SCRIPT_DIR/fm-captain-ruling-check.sh"
 RULING_LOCK="$STATE/.captain-ruling-resolution.lock"
+PENDING_GENERATOR="$SCRIPT_DIR/fm-pending-decisions-generate.sh"
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -643,6 +644,9 @@ $raw_open
 EOF
   fi
   : "$key_seen"
+  FM_PENDING_DECISIONS_OVERRIDE="$DATA/pending-decisions.md" \
+    "$PENDING_GENERATOR" >/dev/null \
+    || fail "could not regenerate the pending captain-decision projection"
   printf 'complete: %s decision inventory reviewed%s\n' "$origin" "${keys:+ ($keys)}"
 }
 

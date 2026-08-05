@@ -220,6 +220,52 @@ test_regeneration_is_stable_and_reply_append_only() {
   pass "unchanged regeneration is byte-stable and does not duplicate reply prefixes"
 }
 
+test_missing_target_is_created_without_clobbering_a_concurrent_writer() {
+  local home pending fakebin real_jq out before after rc
+  home=$(make_home missing-target)
+  pending="$home/data/pending-decisions.md"
+  rm "$pending"
+
+  run_generator "$home" >/dev/null \
+    || fail "generator did not create a fresh pending-decisions scaffold"
+  assert_present "$pending" "fresh-home generation left the target absent"
+  [ "$(grep -Fxc "$QUEUE_BEGIN" "$pending")" = 1 ] \
+    || fail "fresh-home generation did not create exactly one queue-begin marker"
+  [ "$(grep -Fxc "$QUEUE_END" "$pending")" = 1 ] \
+    || fail "fresh-home generation did not create exactly one queue-end marker"
+  [ "$(grep -Fxc "$REPLY_BEGIN" "$pending")" = 1 ] \
+    || fail "fresh-home generation did not create exactly one reply-begin marker"
+  [ "$(grep -Fxc "$REPLY_END" "$pending")" = 1 ] \
+    || fail "fresh-home generation did not create exactly one reply-end marker"
+  assert_grep 'captain-origin-decision-alpha: ' "$pending" \
+    "fresh-home generation omitted the captain reply prefix"
+
+  rm "$pending"
+  real_jq=$(command -v jq)
+  fakebin=$(fm_fakebin "$home/concurrent")
+  cat > "$fakebin/jq" <<'EOF'
+#!/usr/bin/env bash
+if [ ! -f "$FM_HOME/concurrent-target-written" ]; then
+  printf 'concurrent captain bytes\n' > "$FM_HOME/data/pending-decisions.md"
+  : > "$FM_HOME/concurrent-target-written"
+fi
+exec "$REAL_JQ" "$@"
+EOF
+  chmod +x "$fakebin/jq"
+  set +e
+  out=$(PATH="$fakebin:$PATH" REAL_JQ="$real_jq" FM_HOME="$home" "$GENERATOR" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "concurrent fresh-target creation must refuse"
+  assert_contains "$out" "target changed during generation" \
+    "concurrent fresh-target refusal did not name the compare-and-set conflict"
+  before='concurrent captain bytes'
+  after=$(cat "$pending")
+  [ "$after" = "$before" ] \
+    || fail "generator clobbered the concurrently created captain target"
+  pass "fresh-home creation is atomic and preserves compare-and-set refusal"
+}
+
 test_blocked_ordinary_hold_is_generated_once() {
   local home generated
   home=$(make_home blocked-ordinary)
@@ -301,6 +347,7 @@ run_case() { # <case-name> <function>
 run_case projection test_projection_preserves_manual_bytes_and_backlog
 run_case detector test_reply_prefixes_wake_the_real_detector
 run_case stable test_regeneration_is_stable_and_reply_append_only
+run_case missing-target test_missing_target_is_created_without_clobbering_a_concurrent_writer
 run_case blocked-ordinary test_blocked_ordinary_hold_is_generated_once
 run_case orphan test_unanswerable_orphan_is_visible_without_a_swallowed_prefix
 run_case markers test_marker_failures_leave_target_untouched

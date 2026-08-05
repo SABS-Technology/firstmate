@@ -1207,16 +1207,19 @@ test_in_flight_captain_hold_resolves_end_to_end() {
     --reason "captain route pending" --repo sample >/dev/null
   tasks_in "$home" start "$hold" >/dev/null \
     || fail "could not move the captain hold in flight"
+  assert_absent "$home/data/pending-decisions.md" \
+    "fresh decision home unexpectedly began with a pending projection"
   run_decisions "$home" complete "$origin" "$key" >/dev/null \
     || fail "durability verification rejected an in-flight captain hold"
+  assert_present "$home/data/pending-decisions.md" \
+    "inventory completion did not create the pending projection"
+  assert_grep "$hold: " "$home/data/pending-decisions.md" \
+    "inventory completion did not generate the captain reply prefix"
   tasks_in "$home" add "$dependent" "Apply the in-flight sample route" \
     --kind ship --repo sample --blocked-by "$hold" >/dev/null
   mkdir -p "$home/data/$dependent"
   printf 'Decision record: data/decisions/%s.md\n' "$hold" \
     > "$home/data/$dependent/brief.md"
-  write_pending_skeleton "$home"
-  FM_HOME="$home" "$PENDING_GENERATOR" >/dev/null \
-    || fail "generator rejected an in-flight captain hold"
   answer_generated_prefix "$home/data/pending-decisions.md" "$hold" 'Use the east route.'
   wake=$(FM_HOME="$home" "$RULING_CHECK") \
     || fail "detector rejected the in-flight captain ruling"

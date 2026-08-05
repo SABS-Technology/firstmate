@@ -32,7 +32,7 @@ A status change is not ruling ingestion and must never substitute for the decisi
 1. Read the complete investigation result and complete the visual review before declaring either complete.
 2. Inventory only genuine unresolved choices that require the captain.
 3. For each choice, choose a stable key and use the script's `hold` command with a concise title, reason, and repository.
-4. Run the script's `complete` command with the full unresolved-key inventory for that review pass.
+4. Run the script's `complete` command with the full unresolved-key inventory for that review pass; successful completion atomically regenerates the pending-decisions projection.
 5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
 6. After the captain decides, follow the ruling-ingestion turn below.
 7. Confirm Bearings no longer shows the closed hold and that routed work remains in structured backlog state.
