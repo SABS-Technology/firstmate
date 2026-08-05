@@ -179,7 +179,10 @@ acknowledge_rulings() {
 detect_rulings() {
   local id answer answer_digest digest hashes='' ids='' candidates queue
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
-  fm_ruling_ingest || return 0
+  if ! fm_ruling_ingest; then
+    printf 'captain-ruling-error resolver-log-invalid\n'
+    return 0
+  fi
   candidates=$(reply_candidates)
   [ -n "$candidates" ] || return 0
   queue=$(captain_queue) || return 0
