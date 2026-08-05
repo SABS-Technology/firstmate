@@ -82,18 +82,23 @@ fm_ruling_last_reply_digest() {  # <hold-id>
 fm_ruling_reply_candidates() {
   local line id answer
   [ -f "$FM_RULING_REPLIES" ] && [ ! -L "$FM_RULING_REPLIES" ] || return 0
-  while IFS= read -r line; do
-    case "$line" in *:*) ;; *) continue ;; esac
-    id=${line%%:*}
-    answer=${line#*:}
-    id=${id#"${id%%[![:space:]]*}"}
-    id=${id%"${id##*[![:space:]]}"}
-    answer=${answer#"${answer%%[![:space:]]*}"}
-    answer=${answer%"${answer##*[![:space:]]}"}
-    fm_pr_task_id_valid "$id" || continue
-    case "$answer" in ''|'<answer>'|'[answer]') continue ;; esac
-    printf '%s\t%s\n' "$id" "$answer"
-  done < "$FM_RULING_REPLIES"
+  {
+    while IFS= read -r line; do
+      case "$line" in *:*) ;; *) continue ;; esac
+      id=${line%%:*}
+      answer=${line#*:}
+      id=${id#"${id%%[![:space:]]*}"}
+      id=${id%"${id##*[![:space:]]}"}
+      answer=${answer#"${answer%%[![:space:]]*}"}
+      answer=${answer%"${answer##*[![:space:]]}"}
+      fm_pr_task_id_valid "$id" || continue
+      case "$answer" in ''|'<answer>'|'[answer]') continue ;; esac
+      printf '%s\t%s\n' "$id" "$answer"
+    done < "$FM_RULING_REPLIES"
+  } | awk -F '\t' '
+    { ids[NR] = $1; lines[NR] = $0; last[$1] = NR }
+    END { for (row = 1; row <= NR; row++) if (last[ids[row]] == row) print lines[row] }
+  '
 }
 
 fm_ruling_ingest() {
@@ -111,7 +116,7 @@ fm_ruling_answer() {  # <hold-id>
   local wanted=$1 id answer digest candidate=
   fm_ruling_ingest || return 1
   fm_ruling_last_record "$wanted" || return 1
-  [ "$FM_RULING_LAST_TYPE" = REPLY ] || return 1
+  case "$FM_RULING_LAST_TYPE" in REPLY|COMMIT) ;; *) return 1 ;; esac
   while IFS=$'\t' read -r id answer; do
     [ "$id" = "$wanted" ] || continue
     digest=$(fm_ruling_sha256 "$answer") || return 1

@@ -1438,6 +1438,60 @@ test_exact_retry_finishes_routing_without_revision() {
   pass "an exact retry finishes routing a committed decision when no reply changed"
 }
 
+test_multi_answer_history_preserves_committed_retry() {
+  local origin=sample-history-review key=route hold home record log before after answer retry show
+  hold="$origin-decision-$key"
+  setup_partial_resolve multi-answer-retry "$origin" "$key" 'Use the west route.'
+  home=$PARTIAL_HOME
+  record="$home/data/decisions/$hold.md"
+  log="$home/state/captain-ruling-log.tsv"
+  printf '%s: %s\n%s: %s\n' \
+    "$hold" 'Use the east route.' "$hold" 'Use the west route.' \
+    > "$home/data/captain-replies.md"
+  before=$(shasum -a 256 "$log")
+
+  answer=$(FM_HOME="$home" bash -c '
+    SCRIPT_DIR=$1
+    STATE=$2
+    DATA=$3
+    . "$SCRIPT_DIR/fm-pr-lib.sh"
+    . "$SCRIPT_DIR/fm-captain-ruling-log-lib.sh"
+    fm_ruling_ingest && fm_ruling_ingest || exit
+    fm_ruling_reply_candidates
+  ' _ "$ROOT/bin" "$home/state" "$home/data") \
+    || fail "committed multi-answer history could not be ingested twice"
+  [ "$answer" = "$hold"$'\t''Use the west route.' ] \
+    || fail "multi-answer history did not collapse to the latest complete answer"
+  after=$(shasum -a 256 "$log")
+  [ "$before" = "$after" ] \
+    || fail "unchanged multi-answer ingestion appended records after COMMIT"
+  tail -n 1 "$log" | grep -q '^COMMIT' \
+    || fail "unchanged multi-answer ingestion reopened a committed ruling"
+
+  retry=$(FM_HOME="$home" bash -c '
+    SCRIPT_DIR=$1
+    STATE=$2
+    DATA=$3
+    . "$SCRIPT_DIR/fm-pr-lib.sh"
+    . "$SCRIPT_DIR/fm-captain-ruling-log-lib.sh"
+    decision=$(fm_ruling_sha256 "Use the west route.")
+    routes=$(fm_ruling_sha256 "sample-partial-first,sample-partial-second")
+    fm_ruling_commit "$4" "$decision" "$routes" || exit
+    printf "%s" "$FM_RULING_COMMIT_RETRY"
+  ' _ "$ROOT/bin" "$home/state" "$home/data" "$hold") \
+    || fail "the committed multi-answer ruling did not accept exact retry"
+  [ "$retry" = 1 ] || fail "the exact committed retry lost FM_RULING_COMMIT_RETRY"
+  [ "$(shasum -a 256 "$log")" = "$before" ] \
+    || fail "the exact committed retry changed resolver bytes"
+
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to sample-partial-first --routed-to sample-partial-second >/dev/null \
+    || fail "the committed multi-answer retry did not finish routing"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" 'state: done' "the committed multi-answer retry did not close the hold"
+  pass "multi-answer history stays collapsed and preserves committed retry semantics"
+}
+
 test_partial_retry_still_refuses_a_different_decision() {
   local origin=sample-drift-review key=route
   local home hold record show
@@ -1508,5 +1562,6 @@ test_every_embedded_mutation_interruption_refuses_a_superseded_commit
 test_in_flight_captain_hold_resolves_end_to_end
 test_ordinary_work_decision_resolves_without_completing_work
 test_exact_retry_finishes_routing_without_revision
+test_multi_answer_history_preserves_committed_retry
 test_partial_retry_still_refuses_a_different_decision
 test_ruling_wake_loads_the_single_lifecycle_owner
