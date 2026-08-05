@@ -611,6 +611,8 @@ run_ruling_validator_case() {  # <validator> <case>
       ;;
   esac
   chmod 0600 "$log"
+  # These assignments are consumed by the dynamically sourced validator copy.
+  # shellcheck disable=SC2030,SC2031,SC2034
   (
     SCRIPT_DIR="$ROOT/bin"
     FM_HOME="$dir"
@@ -772,6 +774,8 @@ test_answer_ingestion_refuses_while_resolution_lock_is_held() {
 review-decision-route: Use route north.
 <!-- END APPEND-ONLY: captain-replies -->
 EOF
+  # The validator-mutant harness above intentionally uses FM_HOME in a subshell.
+  # shellcheck disable=SC2031
   export FM_HOME="$home"
   export FM_STATE_OVERRIDE="$home/state"
   # shellcheck source=bin/fm-wake-lib.sh disable=SC1091
