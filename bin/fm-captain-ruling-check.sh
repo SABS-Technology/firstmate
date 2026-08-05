@@ -20,6 +20,9 @@
 # when that disagreement survives the normal COMMIT-before-close roll-forward
 # window. A later REPLY on that same hold does not withdraw the disagreement,
 # so an interrupted resolution keeps its resume signal.
+# If the resolver log itself fails validation, ingestion stops and the
+# identity-free `captain-ruling-error resolver-log-invalid` line replaces every
+# ruling this poll would otherwise report.
 # It never changes captain-replies.md and never resolves a hold.
 # `--answer <id>` gives the handling agent the latest complete answer for one
 # captain hold while that hold is open or while a post-COMMIT revision is

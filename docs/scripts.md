@@ -22,6 +22,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-captain-queue.sh`    | Print the canonical read-only union of captain-held work, flagging asymmetric membership as an orphan (schema `fm-captain-queue.v1`) |
 | `fm-pending-decisions-generate.sh` | Regenerate the captain-read-only `data/pending-decisions.md` projection; captain edits live separately in `data/captain-replies.md` |
 | `fm-stage.sh`            | Record and read the append-only work-stage axis, independent of crew supervision status |
+| `fm-captain-ruling-log-lib.sh` | Shared ordered REPLY/COMMIT ruling-log reader, ingester, and snapshot-commit writer  |
+| `fm-append-log-lib.sh`   | Shared failure-atomic append writer for bounded private event logs                    |
 | `fm-linear-projection.sh` | Run the one-way fail-closed Linear projection sync or its separate unauthenticated live schema check |
 | `fm-brief.sh`            | Scaffold ship, scout, secondmate-charter, and Herdr-lab briefs                       |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |

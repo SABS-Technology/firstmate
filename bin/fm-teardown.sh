@@ -8,6 +8,9 @@
 # so a stage emission failure retains every retry identity and local artifact.
 # Before task metadata is deleted, a validated GitHub PR identity is atomically retained as an egress-neutral projection receipt.
 # The receipt is state/linear-pr-receipts/<task-id>.receipt with exactly the schema line, task_id=<task-id>, and pr_url=<canonical-url>.
+# The captain-ruling identity is reserved while the global registered ruling
+# check is installed, so teardown refuses it rather than dismantling a fleet-wide
+# detector through the ordinary per-task path.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so

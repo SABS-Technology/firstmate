@@ -39,6 +39,7 @@ An exact retry can finish a partial routing operation, while a changed decision 
 ## Resolver integrity and snapshot criterion (SC-1)
 
 A resolver log is accepted only when its storage properties and raw record grammar are positively validated.
+A log that fails that validation blocks ingestion, so the detector emits the identity-free `captain-ruling-error resolver-log-invalid` wake instead of any ruling, and every guarded resolution refuses until the log is repaired.
 Content-level agreement between a REPLY and a COMMIT is deliberately not revalidated by the detector.
 The program-owned writer already requires the last record for the hold to be a matching REPLY before it appends a COMMIT, while a non-program writer falls within the local ruling-channel trust gap accepted by the captain's 2026-08-04 ruling.
 
@@ -127,22 +128,38 @@ ok - a detected ruling becomes durable dependent work before its hold closes
 ok - re-hold rejects malformed identity collisions and preserves canonical idempotence
 ok - resolve requires the canonical record and exact routed-work pointer
 ok - resolve requires its session lock and refuses a changed dependent set
+ok - resolve refuses every non-affirmative captain-answer read without changing holds or dependents
 ok - resolve discovers every still-blocked dependent and refuses an undisclosed one
 ok - resolve re-reads the captain ruling and refuses a superseded decision record
 ok - the last observed answer commits, while a later edit becomes a distinct revocation decision
+ok - unterminated editor writes cannot append, route, or close; newline completion resumes
+ok - mutation discovery is conservative and verb-agnostic
 ok - every observed mutation interruption preserves the committed snapshot and surfaces a later edit
 ok - every ordinary-work mutation interruption preserves the snapshot and surfaces a later edit
 ok - in-flight captain holds generate, wake, read, record, route, and resolve
 ok - ordinary-kind replies resolve only the captain hold and never complete the work item
 ok - an exact retry finishes routing a committed decision when no reply changed
+ok - multi-answer history stays collapsed and preserves committed retry semantics
 ok - a partial-resolve retry carrying a different decision is still refused
-ok - captain-ruling wakes load the single lifecycle owner and preserve close ordering
+ok - ruling and revision wakes load the single lifecycle owner and preserve close ordering
 
 $ bash tests/fm-captain-ruling-check.test.sh
 ok - one private single-link global check is registered
+ok - the global ruling detector identity is reserved before task check mutation
+ok - global install preserves legacy task bytes and guarded teardown releases the identity
 ok - new rulings wake once while malformed, unchanged, and resolved ids stay silent
 ok - the check finishes under 5s and leaves captain-replies.md byte-identical
-ok - active captain holds are accepted on any task kind while other holds stay silent
+ok - discarded detection retries, then durable append acknowledgment dedupes
+ok - byte, encoding, size, type, and read failures wake durably; absence repair restores normal detection
+ok - all storage and record-boundary guards kill their isolated mutants
+ok - a post-COMMIT edit wakes as a readable new decision after the old hold closes
+ok - a persistent open-versus-COMMIT disagreement wakes once durably without input mutation
+ok - a COMMIT-to-close roll-forward window stays silent after the later queue check agrees
+ok - a settled queue and COMMIT log remain silent
+ok - an edited reply never withdraws the interrupted post-COMMIT resume signal
+ok - disabling the disagreement surface turns the persistent-disagreement assertion red
+ok - a watcher with Perl and both timeout runners genuinely absent wakes durably before operation
+ok - ordinary-kind captain holds emit ruling wakes and exact answers
 ok - answer reader returns the latest complete open ruling without changing captain input
 ok - reply ingestion serializes with active ruling resolution
 ok - file-backed ruling channel declares its accepted untrusted boundary

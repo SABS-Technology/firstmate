@@ -44,6 +44,7 @@ When it contains `captain-ruling-revision <hold-id>[,<hold-id>...]`, the named i
 Read the revised answer, inspect the committed decision record and routed work, and register a new stable captain-held decision that asks for explicit revocation or retention of the committed ruling.
 Never overwrite the old decision record, reopen the old identity, or apply the revision before that revocation decision resolves.
 When it instead contains `captain-ruling-error queue-log-disagreement <hold-id>[,<hold-id>...]`, treat it as a persistent disagreement between the canonical queue and resolver log, inspect the interrupted resolution, and resume or repair that same lifecycle without interpreting or re-recording the captain's answer from the wake.
+When it contains `captain-ruling-error resolver-log-invalid`, it names no identity because the resolver log itself failed validation; every ruling detection and guarded resolution stays blocked until that log is repaired, so treat it as an integrity incident and never reconstruct a ruling or a decision record from it.
 `docs/decision-hold-lifecycle.md` owns the SC-1 integrity boundary, including the deliberate exclusion of content-level REPLY-versus-COMMIT validation under the captain's 2026-08-04 ruling.
 The wake deliberately contains identities rather than answer text, so read each exact current answer with `bin/fm-captain-ruling-check.sh --answer <hold-id>`.
 Read `tasks-axi show <hold-id> --full` and use its kind to select the matching guarded resolution path.
