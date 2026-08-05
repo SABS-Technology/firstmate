@@ -14,10 +14,10 @@ from pathlib import Path
 
 ENDPOINT = "https://api.linear.app/graphql"
 STAGES = ("implementation", "investigation", "validation", "pr-open", "merged", "complete")
-ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
 STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 PR_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
-TASK_RE = re.compile(r"^- \[([ x])\] ([A-Za-z0-9][A-Za-z0-9._-]*) - (.*)$")
+TASK_RE = re.compile(r"^- \[([ x])\] ([A-Za-z0-9_-][A-Za-z0-9._-]*) - (.*)$")
 
 DOCS = {
     "CreateIssue": """mutation CreateIssue($input: IssueCreateInput!) {

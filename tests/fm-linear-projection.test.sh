@@ -487,6 +487,61 @@ EOF
   pass "every malformed stage row refuses before transport or journal mutation"
 }
 
+test_projection_accepts_every_canonical_leading_identity_character() {
+  local home summary
+  home=$(make_fixture canonical-leading-identities)
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] _private-task - Project private-prefixed work (repo: firstmate) (kind: ship)
+
+## Queued
+- [ ] -flag-task - Project dash-prefixed work (repo: firstmate) (kind: scout)
+
+## Done
+EOF
+  cat > "$home/state/stage-transitions.tsv" <<'EOF'
+_private-task	implementation	2026-08-03T00:00:00Z
+-flag-task	investigation	2026-08-03T00:00:00Z
+EOF
+  printf '%s\n' '{"schema":"fm-captain-queue.v1","count":0,"orphan_count":0,"items":[]}' \
+    > "$home/queue.json"
+  # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+  . "$ROOT/bin/fm-pr-lib.sh"
+  if ! fm_pr_task_id_valid _private-task || ! fm_pr_task_id_valid -flag-task; then
+    fail "leading underscore and dash fixtures are not canonically valid"
+  fi
+
+  summary=$(sync_env "$home") || fail "canonical leading identities were rejected during sync"
+  printf '%s' "$summary" | jq -e '.source_count == 2 and .created == 2' >/dev/null \
+    || fail "canonically valid leading identities were silently omitted: $summary"
+  jq -e '.items | has("_private-task") and has("-flag-task")' \
+    "$home/state/linear-projection.json" >/dev/null \
+    || fail "canonical leading identities were omitted from the projection journal"
+
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+
+## Queued
+
+## Done
+EOF
+  cat > "$home/data/done-archive.md" <<'EOF'
+- [x] _private-task - Project private-prefixed work (repo: firstmate) (kind: ship)
+- [x] -flag-task - Project dash-prefixed work (repo: firstmate) (kind: scout)
+EOF
+  summary=$(sync_env "$home") || fail "canonical leading identities were rejected during archive sync"
+  printf '%s' "$summary" | jq -e '.archived == 2' >/dev/null \
+    || fail "canonical leading identities were silently omitted from archive parsing: $summary"
+  jq -e '.items["_private-task"].archived and .items["-flag-task"].archived' \
+    "$home/state/linear-projection.json" >/dev/null \
+    || fail "canonical leading identities did not survive journal validation and archive"
+  pass "backlog, stage, journal, and archive accept every canonical leading identity character"
+}
+
 test_native_github_check_totals_keep_incomplete_checks_pending() {
   local home fakebin log
   home=$(make_fixture pending-github-checks)
@@ -571,6 +626,7 @@ test_receipt_pr_fallback_survives_cleanup_before_first_sync
 test_archive_boundary_never_resurrects_completed_item
 test_journal_preflight_refuses_all_malformed_records_before_transport
 test_stage_corruption_refuses_regression_without_losing_prior_valid_stage
+test_projection_accepts_every_canonical_leading_identity_character
 test_native_github_check_totals_keep_incomplete_checks_pending
 test_transport_failure_never_emits_credential
 test_live_schema_probe_is_opt_in_and_default_run_is_offline
