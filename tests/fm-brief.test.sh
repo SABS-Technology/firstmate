@@ -97,9 +97,9 @@ test_ship_claim_proof_discipline() {
       "$id: ship brief lost the durable known-open reporting surface"
     assert_grep "cannot be closed within the requested instance" "$brief" \
       "$id: an escape impossible to close in scope has no stated disposition"
-    assert_grep "same defect class beyond the requested instance, name the generalization and escalate it to firstmate" "$brief" \
+    assert_grep "same defect class beyond the requested instance" "$brief" \
       "$id: ship brief lost class-generalization escalation"
-    assert_grep "Do not fix that generalization or expand the round" "$brief" \
+    assert_grep "or expand the round; firstmate decides whether it blocks or becomes separately tracked work" "$brief" \
       "$id: class generalization could be read as authorizing scope growth"
     assert_grep "authorizes no follow-up fixing or scope growth" "$brief" \
       "$id: ship brief lost its scope-growth reconciliation"
@@ -113,8 +113,41 @@ test_ship_claim_proof_discipline() {
     "no-mistakes brief lost the gate-round timing rule for escapes"
   assert_grep "Both preserve the validation gate-response contract below" "$brief" \
     "no-mistakes brief lost its self-contained pointer to the gate-response contract"
-  assert_grep "scope growth (rules 3 and 5)." "$brief" \
+  assert_grep "scope growth into an unrelated defect class or unrelated surface (rule 5)." "$brief" \
     "no-mistakes brief lost its explicit gate-response rule reconciliation"
+  # Only this mode runs against a review gate, so only its claim-proof item 2 may
+  # speak of listed findings. The brief must never both require (rule 5) and
+  # forbid (claim-proof item 2) closing the defect class of a listed finding.
+  assert_grep "same defect class beyond the requested instance, and no listed review finding covers that class, name the generalization and escalate it to firstmate" "$brief" \
+    "no-mistakes claim-proof escalation still swallows the defect class of a listed finding"
+  assert_grep "Do not fix that unlisted generalization or expand the round" "$brief" \
+    "no-mistakes brief forbids fixing a listed finding's own class, not just an unlisted one"
+  assert_grep "The defect class a listed finding belongs to is never such a generalization" "$brief" \
+    "no-mistakes brief lets claim-proof escalation override rule 5's class-closure requirement"
+  assert_grep "escalating that class instead of closing it there is the instance-only closure rule 5 forbids" "$brief" \
+    "no-mistakes brief does not name instance-only closure as the failure escalation would cause"
+  assert_grep "A defect class that a listed finding does belong to is not this case: it stays in the round and you close it there" "$brief" \
+    "claim-proof item 2 does not keep a listed finding's class in-round"
+  assert_no_grep "scope growth (rules 3 and 5)." "$brief" \
+    "no-mistakes brief still cites rule 5 as blanket authority against closing a listed finding's class"
+  # The claim-proof section cites rule 5, so it must carry rule 5's own two
+  # qualifiers: the rules-2/3 fix-eligible boundary and the escalation that a
+  # purpose-defeating deferral requires. Otherwise it demands in-round closure
+  # rule 5 defers, and forbids the escalation rule 5 mandates.
+  assert_grep "within the fix-eligible boundary rules 2 and 3 set" "$brief" \
+    "claim-proof note demands class closure past the boundary rules 2 and 3 set"
+  assert_grep "a same-class instance rules 2 or 3 defer remains a follow-up and the class still counts as completely closed" "$brief" \
+    "claim-proof note reads a rules-2-or-3 deferral as the incomplete closure rule 5 forbids"
+  assert_grep "a deferral rule 5 calls purpose-defeating goes to firstmate rather than into a silent follow-up" "$brief" \
+    "claim-proof note forbids the escalation rule 5 requires for a purpose-defeating deferral"
+  # Item 2 renders right after the brief's own `# Rules`, whose items 2, 3, and 5
+  # say something else entirely, and before the note that names the contract. Its
+  # citations must carry the "gate-response" qualifier or they resolve to the
+  # wrong list at the point of reading.
+  assert_grep "as far as gate-response rules 2 and 3 make its instances fix-eligible" "$brief" \
+    "claim-proof item 2 keeps a listed finding's class in-round past the fix-eligible boundary, or cites a rule list the reader resolves to the brief's own Rules"
+  assert_grep "one whose deferral would defeat the purpose of the change goes to firstmate as gate-response rule 5 requires" "$brief" \
+    "claim-proof item 2 leaves a purpose-defeating deferral no route to firstmate, or routes it via the brief's own rule 5 instead"
 
   assert_grep "record it in the PR body as known-open" "$home/data/claim-proof-direct/brief.md" \
     "direct-PR brief must name the PR body as the durable known-open surface"
@@ -126,6 +159,20 @@ test_ship_claim_proof_discipline() {
       "$id: brief lost the mode-neutral scope reconciliation"
     assert_grep "If one surfaces too late to close in scope, or cannot be closed" "$brief" \
       "$id: the late-escape trigger lost its completion and reads as a dangling clause"
+    # These modes have no review gate, no findings list, and no rounds, so their
+    # claim-proof item 2 keeps the flat escalate-do-not-fix boundary.
+    assert_grep "same defect class beyond the requested instance, name the generalization and escalate it to firstmate" "$brief" \
+      "$id: brief lost the flat class-generalization escalation for a mode with no review gate"
+    assert_grep "Do not fix that generalization or expand the round" "$brief" \
+      "$id: brief narrowed its do-not-fix boundary to a subset of generalizations"
+    assert_no_grep "listed review finding" "$brief" \
+      "$id: brief qualifies escalation on a findings list this mode never produces"
+    assert_no_grep "it stays in the round and you close it there" "$brief" \
+      "$id: brief tells a crewmate with no review round to close a defect class in-round"
+    assert_no_grep "fix-eligible" "$brief" \
+      "$id: brief bounds its scope by a severity rubric this mode never receives"
+    assert_no_grep "purpose-defeating" "$brief" \
+      "$id: brief leaked the gate-only purpose-defeating deferral escalation"
     assert_no_grep "rules 3 and 5" "$brief" \
       "$id: brief cites gate-response rules its scaffold never defines"
     assert_no_grep "gate-response" "$brief" \
@@ -208,8 +255,22 @@ test_no_mistakes_gate_response_contract_is_ship_only() {
     "gate-response contract lost the firstmate-owned continuation checkpoint"
   assert_no_grep 'separate cap of 4' "$ship" \
     "gate-response contract leaked the captain-private firstmate cap"
-  assert_grep 'Freeze scope per round, not per finding' "$ship" \
-    "gate-response contract lost round-level scope freeze"
+  assert_grep 'Close the full defect class each listed finding belongs to; closing only the listed instances is an incomplete fix, not a bounded one.' "$ship" \
+    "gate-response contract lets a fixer stop at listed instances instead of closing their defect class"
+  assert_grep 'name the class you believe it belongs to in your gate response and state the class you are closing' "$ship" \
+    "gate-response contract does not make the fixer declare the broader class it is closing"
+  assert_grep 'Do not expand the round into an unrelated defect class or unrelated surface' "$ship" \
+    "gate-response contract lost the boundary against unrelated scope growth"
+  # Rule 5 must not order a fixer past the fix-eligible boundary rules 2 and 3 set,
+  # and must not let a deferral that breaks the change be filed silently.
+  assert_grep 'Rules 2 and 3 bound which of them are fix-eligible and take precedence over this rule' "$ship" \
+    "class closure can order a fixer past the severity and follow-up-class boundaries rules 2 and 3 set"
+  assert_grep 'closing the class within that boundary is a complete fix, not an instance-only one' "$ship" \
+    "a rules-2-and-3 deferral still reads as the incomplete instance-only closure rule 5 forbids"
+  assert_grep 'name it in your gate response as a purpose-defeating deferral and escalate it to firstmate instead of silently filing a follow-up' "$ship" \
+    "a deferral that defeats the purpose of the change can be filed as a silent follow-up"
+  assert_grep 'Severity grades quality, not whether the thing under construction works.' "$ship" \
+    "gate-response contract lost why a low-severity same-class instance can still defeat the change"
   assert_grep 'A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.' "$ship" \
     "gate-response contract weakened the security floor"
 
