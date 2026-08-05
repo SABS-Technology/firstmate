@@ -1034,6 +1034,39 @@ test_resolve_refuses_a_superseded_captain_ruling() {
   pass "resolve re-reads the captain ruling and refuses a superseded decision record"
 }
 
+test_unterminated_reply_never_routes_or_closes() {
+  local origin=sample-incomplete-review key=route hold home record dependent before after show
+  hold="$origin-decision-$key"
+  dependent=sample-incomplete-work
+  home=$(make_ruling_home incomplete-editor-write "$origin" "$key" 'Use the east route.')
+  record="$home/data/decisions/$hold.md"
+  tasks_in "$home" add "$dependent" "Apply the complete ruling" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  printf '%s: %s' "$hold" 'Use the east route.' > "$home/data/captain-replies.md"
+  before=$(shasum -a 256 "$home/data/backlog.md")
+
+  if run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to "$dependent" > "$home/incomplete.out" 2> "$home/incomplete.err"; then
+    fail "an unterminated editor write routed work and closed its captain hold"
+  fi
+  after=$(shasum -a 256 "$home/data/backlog.md")
+  [ "$before" = "$after" ] || fail "an unterminated editor write mutated the backlog"
+  [ ! -s "$home/state/captain-ruling-log.tsv" ] \
+    || fail "an unterminated editor write appended a resolver REPLY"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" 'blocked: yes' "an unterminated editor write routed dependent work"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" 'state: queued' "an unterminated editor write closed the captain hold"
+
+  printf '\n' >> "$home/data/captain-replies.md"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to "$dependent" >/dev/null \
+    || fail "the completed editor record did not resume resolution"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" 'state: done' "the completed editor record did not close the hold"
+  pass "unterminated editor writes cannot append, route, or close; newline completion resumes"
+}
+
 test_every_mutation_interruption_refuses_a_superseded_commit() {
   local origin=sample-interruption-review key=route hold record home mutation_count mutation_sequence position
   local before after mutant show
@@ -1468,6 +1501,7 @@ test_resolve_enforces_session_lock_and_stable_dependent_set
 test_resolve_fails_closed_when_current_answer_is_unreadable
 test_resolve_refuses_an_undisclosed_blocked_dependent
 test_resolve_refuses_a_superseded_captain_ruling
+test_unterminated_reply_never_routes_or_closes
 test_mutation_probe_is_verb_agnostic
 test_every_mutation_interruption_refuses_a_superseded_commit
 test_every_embedded_mutation_interruption_refuses_a_superseded_commit

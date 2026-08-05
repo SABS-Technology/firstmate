@@ -82,7 +82,7 @@ fm_ruling_last_reply_digest() {  # <hold-id>
 fm_ruling_reply_candidates() {
   local line id answer
   [ -f "$FM_RULING_REPLIES" ] && [ ! -L "$FM_RULING_REPLIES" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r line; do
     case "$line" in *:*) ;; *) continue ;; esac
     id=${line%%:*}
     answer=${line#*:}
