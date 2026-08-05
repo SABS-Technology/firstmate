@@ -27,28 +27,43 @@ fm_ruling_sha256() {  # <text>
 }
 
 fm_ruling_log_valid() {
-  local type id decision routes extra read_status
+  local device
   [ ! -e "$FM_RULING_LOG" ] && [ ! -L "$FM_RULING_LOG" ] && return 0
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
-  local device
   device=$(fm_pr_file_device "$STATE") || return 1
   fm_pr_private_file_valid "$FM_RULING_LOG" 600 "$device" || return 1
-  while :; do
-    type='' id='' decision='' routes='' extra=''
-    IFS=$'\t' read -r type id decision routes extra
-    read_status=$?
-    if [ "$read_status" -ne 0 ]; then
-      [ -z "$type$id$decision$routes$extra" ] || return 1
-      break
-    fi
-    [ -z "${extra:-}" ] && fm_pr_task_id_valid "$id" \
-      && [[ "$decision" =~ ^[0-9a-f]{64}$ ]] || return 1
-    case "$type:$routes" in
-      REPLY:-) ;;
-      COMMIT:*) [[ "$routes" =~ ^[0-9a-f]{64}$ ]] || return 1 ;;
-      *) return 1 ;;
-    esac
-  done < "$FM_RULING_LOG"
+  command -v perl >/dev/null 2>&1 || return 1
+  perl -MFcntl=:DEFAULT -e '
+    # FM_RULING_RAW_VALIDATOR: this reader must preserve every ledger byte.
+    my ($path, $device) = @ARGV;
+    exit 1 unless $device =~ /\A[0-9]+\z/;
+    sysopen(my $file, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or exit 1;
+    my @stat = stat($file);
+    exit 1 unless @stat && -f _ && $stat[0] == $device && $stat[3] == 1
+      && ($stat[2] & 07777) == 0600 && $stat[7] > 0;
+    binmode($file, ":raw") or exit 1;
+    my ($buffer, $total, $records) = ("", 0, 0);
+    while (1) {
+      my $read = sysread($file, my $chunk, 4096);
+      exit 1 unless defined $read;
+      last if $read == 0;
+      $total += $read;
+      $buffer .= $chunk;
+      while ((my $newline = index($buffer, "\n")) >= 0) {
+        my $line = substr($buffer, 0, $newline + 1, "");
+        exit 1 if length($line) > 4096 || !valid_record($line);
+        $records++;
+      }
+      exit 1 if length($buffer) > 4096;
+    }
+    close($file) or exit 1;
+    exit 1 unless $records > 0 && $buffer eq "" && $total == $stat[7];
+
+    sub valid_record {
+      my ($line) = @_;
+      return $line =~ /\A(?:REPLY\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t-|COMMIT\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t[0-9a-f]{64})\n\z/;
+    }
+  ' "$FM_RULING_LOG" "$device" 2>/dev/null
 }
 
 fm_ruling_append() {  # <type> <id> <decision-digest> <routes-digest-or-dash>

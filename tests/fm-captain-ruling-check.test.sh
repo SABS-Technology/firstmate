@@ -353,7 +353,8 @@ EOF
 }
 
 test_every_malformed_resolver_state_wakes_and_recovers_after_repair() {
-  local world home fakebin pending log shape before_reply before_log out
+  local world home fakebin pending log shape before_reply before_log after_log out
+  local real_perl reader_refuse
   world=$(make_home malformed-resolver-log); home=${world%%|*}; fakebin=${world#*|}
   pending="$home/data/captain-replies.md"
   log="$home/state/captain-ruling-log.tsv"
@@ -367,42 +368,95 @@ EOF
   FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
     "$CHECK" --install || fail "could not install the detector for malformed-log coverage"
 
-  for shape in unsafe-storage malformed-record torn-reply torn-commit; do
+  real_perl=$(command -v perl)
+  cat > "$fakebin/perl" <<SH
+#!/usr/bin/env bash
+if [ "\${FM_TEST_RULING_READER_REFUSE:-0}" = 1 ] \
+  && printf '%s\n' "\$@" | grep -Fq FM_RULING_RAW_VALIDATOR; then
+  exit 1
+fi
+exec '$real_perl' "\$@"
+SH
+  chmod +x "$fakebin/perl"
+
+  for shape in truncated partial-final-field no-final-newline invalid-utf8 unknown-record \
+    directory fifo mode-0644 mode-000 permission-error zero-byte nul-only embedded-nul crlf utf8-bom extra-blank-line; do
+    rm -rf "$log"
+    reader_refuse=0
     case "$shape" in
-      unsafe-storage)
+      truncated)
+        printf 'REPL' > "$log"
+        ;;
+      partial-final-field)
+        printf 'COMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tbbbb\n' > "$log"
+        ;;
+      no-final-newline)
+        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-' > "$log"
+        ;;
+      invalid-utf8)
+        printf '\377' > "$log"
+        ;;
+      unknown-record)
+        printf 'UNKNOWN\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        ;;
+      directory)
+        mkdir "$log"
+        ;;
+      fifo)
+        mkfifo "$log"
+        ;;
+      mode-0644)
         printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
         chmod 0644 "$log"
         ;;
-      malformed-record)
-        printf 'BROKEN\n' > "$log"
-        chmod 0600 "$log"
+      mode-000)
+        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        chmod 000 "$log"
         ;;
-      torn-reply)
-        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-' > "$log"
-        chmod 0600 "$log"
+      permission-error)
+        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        reader_refuse=1
         ;;
-      torn-commit)
-        printf 'COMMIT\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' > "$log"
-        chmod 0600 "$log"
+      zero-byte)
+        : > "$log"
+        ;;
+      nul-only)
+        printf '\0' > "$log"
+        ;;
+      embedded-nul)
+        printf 'REPLY\treview-decision-route\0\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        ;;
+      crlf)
+        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\r\n' > "$log"
+        ;;
+      utf8-bom)
+        printf '\357\273\277REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        ;;
+      extra-blank-line)
+        printf 'REPLY\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n\n' > "$log"
         ;;
     esac
+    [ -d "$log" ] || [ "$shape" = fifo ] || [ "$shape" = mode-0644 ] \
+      || [ "$shape" = mode-000 ] || chmod 0600 "$log"
     rm -f "$home/state/.wake-queue"
     before_reply=$(shasum -a 256 "$pending")
-    before_log=$(shasum -a 256 "$log")
+    before_log=$(ls -ldn "$log" 2>/dev/null; [ -f "$log" ] && shasum -a 256 "$log" 2>/dev/null || true)
     FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
       PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+      FM_TEST_RULING_READER_REFUSE="$reader_refuse" \
       FM_POLL=0 FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=5 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=999999 \
       perl -e 'alarm shift; exec @ARGV' 10 "$WATCH" > "$home/watch.out" 2> "$home/watch.err" \
       || fail "watcher failed while surfacing $shape resolver state"
     [ "$(grep -Fc 'captain-ruling-error resolver-log-invalid' "$home/state/.wake-queue")" -eq 1 ] \
       || fail "$shape resolver state did not produce one durable supervisor wake"
     [ "$(shasum -a 256 "$pending")" = "$before_reply" ] \
-      && [ "$(shasum -a 256 "$log")" = "$before_log" ] \
+      || fail "$shape detection changed captain input"
+    after_log=$(ls -ldn "$log" 2>/dev/null; [ -f "$log" ] && shasum -a 256 "$log" 2>/dev/null || true)
+    [ "$after_log" = "$before_log" ] \
       || fail "$shape detection changed captain input or repaired the resolver log"
   done
 
-  : > "$log"
-  chmod 0600 "$log"
+  rm -f "$log"
   cat > "$pending" <<'EOF'
 <!-- BEGIN APPEND-ONLY: captain-replies -->
 review-decision-route: Use route north.
@@ -411,7 +465,11 @@ EOF
   out=$(run_check "$home" "$fakebin") || fail "detector did not recover after explicit log repair"
   [ "$out" = 'captain-ruling review-decision-route' ] \
     || fail "explicit repair did not restore ruling detection: $out"
-  pass "every malformed resolver-state class wakes durably without mutation, then explicit repair restores detection"
+  out=$(read_answer "$home" "$fakebin" review-decision-route) \
+    || fail "a valid nonempty resolver log was not accepted after repair"
+  [ "$out" = 'Use route north.' ] \
+    || fail "normal ruling lookup failed through the valid repaired log: $out"
+  pass "byte, encoding, size, type, and read failures wake durably; absence repair restores normal detection"
 }
 
 test_partial_reply_region_waits_for_completion() {
