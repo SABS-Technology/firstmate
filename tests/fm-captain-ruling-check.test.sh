@@ -6,6 +6,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 CHECK="$ROOT/bin/fm-captain-ruling-check.sh"
+WATCH="$ROOT/bin/fm-watch.sh"
 DECISION_DOC="$ROOT/docs/decision-hold-lifecycle.md"
 TMP_ROOT=$(fm_test_tmproot fm-captain-ruling-check-tests)
 REPLY_BEGIN='<!-- BEGIN APPEND-ONLY: captain-replies -->'
@@ -175,6 +176,13 @@ read_answer() {
     "$CHECK" --answer "$id"
 }
 
+ack_detection() {
+  local home=$1 fakebin=$2 notification=$3
+  FM_HOME="$home" FM_CAPTAIN_RULING_WAKE_DURABLE=1 \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "$CHECK" --ack "$notification"
+}
+
 test_global_install_is_registered() {
   local world home fakebin count
   world=$(make_home install); home=${world%%|*}; fakebin=${world#*|}
@@ -232,6 +240,8 @@ EOF
   [ "$elapsed" -lt 5 ] || fail "check took ${elapsed}s, too close to FM_CHECK_TIMEOUT"
   after=$(shasum -a 256 "$pending" | awk '{print $1}')
   [ "$before" = "$after" ] || fail "detector mutated pending-decisions.md"
+  ack_detection "$home" "$fakebin" "$out" \
+    || fail "durable notification acknowledgment failed"
   [ -s "$home/state/.captain-rulings-seen" ] || fail "durable seen state is absent"
 
   out=$(run_check "$home" "$fakebin") || fail "dedupe check failed"
@@ -240,6 +250,47 @@ EOF
   [ -z "$out" ] || fail "unchanged file woke a second time: $out"
   pass "new rulings wake once while malformed, unchanged, and resolved ids stay silent"
   pass "the check finishes under 5s and leaves pending-decisions.md byte-identical"
+}
+
+test_detection_retries_until_durable_wake_is_acknowledged() {
+  local world home fakebin pending first second third watch_out
+  world=$(make_home durable-ack); home=${world%%|*}; fakebin=${world#*|}
+  pending="$home/data/pending-decisions.md"
+  cat > "$pending" <<'EOF'
+<!-- BEGIN APPEND-ONLY: captain-replies -->
+review-decision-route: Use route north.
+<!-- END APPEND-ONLY: captain-replies -->
+EOF
+
+  first=$(run_check "$home" "$fakebin") || fail "initial ruling detection failed"
+  [ "$first" = 'captain-ruling review-decision-route' ] \
+    || fail "initial ruling detection returned the wrong wake: $first"
+  assert_absent "$home/state/.captain-rulings-seen" \
+    "detection acknowledged a ruling before any durable wake append"
+
+  second=$(run_check "$home" "$fakebin") || fail "retry ruling detection failed"
+  [ "$second" = "$first" ] \
+    || fail "a discarded detection did not re-emit on the next poll: $second"
+
+  printf '%s\n' fm-pr-check-migration-scan-v1 > "$home/state/.pr-check-migration-scan-v1"
+  printf '%s\n' fm-pr-check-migration-v1 > "$home/state/.pr-check-migration-v1"
+  chmod 0600 "$home/state/.pr-check-migration-scan-v1" "$home/state/.pr-check-migration-v1"
+  FM_HOME="$home" PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "$CHECK" --install || fail "could not install the ruling check for watcher acknowledgment"
+  watch_out="$home/watch.out"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    PATH="$fakebin:${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    FM_POLL=0 FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=5 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$watch_out" 2> "$home/watch.err" \
+    || fail "watcher did not durably append and acknowledge the ruling: $(cat "$home/watch.err")"
+  assert_grep 'captain-ruling review-decision-route' "$home/state/.wake-queue" \
+    "watcher acknowledged the ruling without a durable wake record"
+  [ -s "$home/state/.captain-rulings-seen" ] \
+    || fail "watcher did not acknowledge the ruling after the durable wake append"
+
+  third=$(run_check "$home" "$fakebin") || fail "post-acknowledgment ruling check failed"
+  [ -z "$third" ] || fail "acknowledged ruling notified twice: $third"
+  pass "discarded detection retries, then durable append acknowledgment dedupes"
 }
 
 test_partial_reply_region_waits_for_completion() {
@@ -383,6 +434,7 @@ test_file_ruling_channel_declares_accepted_untrusted_boundary() {
 
 test_global_install_is_registered
 test_detection_dedupe_malformed_and_immutability
+test_detection_retries_until_durable_wake_is_acknowledged
 test_partial_reply_region_waits_for_completion
 test_detection_survives_heading_moves_and_renames
 test_captain_hold_on_task_kind_is_replyable

@@ -776,6 +776,8 @@ while :; do
     rejected_checks=
     for c in "$STATE"/*.check.sh; do
       [ -e "$c" ] || continue
+      custom_snapshot=
+      custom_ack=0
       if [ "$(basename "$c")" = x-watch.check.sh ]; then
         if fmx_poll_shim_valid "$c" "$FM_HOME" "$FM_ROOT" \
           && [ -f "$FM_ROOT/bin/fm-x-poll.sh" ] && [ ! -L "$FM_ROOT/bin/fm-x-poll.sh" ]; then
@@ -798,9 +800,10 @@ while :; do
           out=$FM_CHECK_RESULT
         elif fm_custom_check_snapshot_prepare "$STATE" "$id"; then
           custom_snapshot=$FM_CUSTOM_CHECK_SNAPSHOT
+          [ "$id" = captain-ruling ] && custom_ack=1
           run_check_capture "$custom_snapshot" || exit 1
           out=$FM_CHECK_RESULT
-          fm_custom_check_snapshot_cleanup
+          [ "$custom_ack" = 1 ] || fm_custom_check_snapshot_cleanup
         else
           fm_custom_check_snapshot_cleanup
           rejected_checks="$rejected_checks $c"
@@ -810,9 +813,18 @@ while :; do
       if [ -n "$out" ]; then
         reason="check: $c: $out"
         fm_wake_append check "$c" "$reason" || exit 1
+        if [ "$custom_ack" = 1 ]; then
+          FM_CAPTAIN_RULING_WAKE_DURABLE=1
+          export FM_CAPTAIN_RULING_WAKE_DURABLE
+          run_check_capture "$custom_snapshot" --ack "$out" || exit 1
+          unset FM_CAPTAIN_RULING_WAKE_DURABLE
+          [ -z "$FM_CHECK_RESULT" ] || exit 1
+        fi
+        fm_custom_check_snapshot_cleanup
         touch "$STATE/.last-check"
         wake "$reason"
       fi
+      fm_custom_check_snapshot_cleanup
     done
     if [ -n "$rejected_checks" ]; then
       reason="check: rejected unauthenticated state checks:$rejected_checks"
