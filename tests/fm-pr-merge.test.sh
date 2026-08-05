@@ -42,10 +42,67 @@ make_case() {
   printf '%s\n' "$case_dir"
 }
 
-# gh-axi mock recording every invocation to a log file, and gh mock reproducing
-# the stable machine contract fm-pr-merge.sh reads: headRefOid for
-# fm-pr-check.sh's pr_head lookup and the TAB-joined state/merged pair for the
-# merge-state reconcile. Args: case_dir head_sha
+# gh mock modelling the real `gh pr view` machine contract (verified against gh
+# 2.89.0): only fields the CLI actually exposes are answerable, any other field
+# fails with the CLI's own "Unknown JSON field" refusal, and -q is evaluated by
+# jq exactly as gh evaluates it. A query for a field GitHub does not implement -
+# `merged`, say - therefore fails here just as it fails in production.
+# Args: case_dir head_sha
+write_gh_mock() {
+  local case_dir=$1 head=$2
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'FM_GH_HEAD=%s\n' "$head"
+    cat <<'SH'
+printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+[ "${1:-} ${2:-}" = "pr view" ] || exit 0
+shift 2
+fields=
+query=
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --json) fields=${2:-} ; shift 2 ;;
+    -q|--jq) query=${2:-} ; shift 2 ;;
+    --repo|-R) shift 2 ;;
+    *) shift ;;
+  esac
+done
+# The subset of gh 2.89.0's `pr view` field set firstmate reads. mergedAt is
+# null until the forge merges the PR, and state is the only merge signal.
+state=OPEN
+merged_at=null
+if [ -n "${FM_TEST_GH_MERGED:-}" ] && [ -f "$FM_TEST_GH_MERGED" ]; then
+  state=MERGED
+  merged_at='"2026-08-05T00:00:00Z"'
+fi
+if [ -z "$fields" ]; then
+  echo 'Specify one or more comma-separated fields for `--json`:' >&2
+  exit 1
+fi
+IFS=,
+for field in $fields; do
+  case $field in
+    state|mergedAt|headRefOid) ;;
+    *) unset IFS ; printf 'Unknown JSON field: "%s"\n' "$field" >&2 ; exit 1 ;;
+  esac
+done
+unset IFS
+view=$(printf '{"state":"%s","mergedAt":%s,"headRefOid":"%s"}' \
+  "$state" "$merged_at" "$FM_GH_HEAD" | jq -c "{$fields}") || exit 1
+if [ -n "$query" ]; then
+  printf '%s' "$view" | jq -r "$query"
+else
+  printf '%s\n' "$view"
+fi
+SH
+  } > "$case_dir/fakebin/gh"
+  chmod +x "$case_dir/fakebin/gh"
+  : > "$case_dir/gh.log"
+}
+
+# gh-axi mock recording every invocation to a log file, paired with the gh mock
+# above so fm-pr-check.sh's pr_head lookup and fm-pr-merge.sh's merge-state
+# reconcile both read the real forge contract. Args: case_dir head_sha
 add_gh_mocks() {
   local case_dir=$1 head=$2
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
@@ -56,28 +113,8 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
-  cat > "$case_dir/fakebin/gh" <<SH
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
-case "\${1:-} \${2:-}" in
-  "pr view")
-    case " \$* " in
-      *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
-      *state,merged*)
-        if [ -f "\$FM_TEST_GH_MERGED" ]; then
-          printf 'MERGED\ttrue\n'
-        else
-          printf 'OPEN\tfalse\n'
-        fi
-        exit 0
-        ;;
-    esac
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
-  : > "$case_dir/gh.log"
+  chmod +x "$case_dir/fakebin/gh-axi"
+  write_gh_mock "$case_dir" "$head"
 }
 
 # gh-axi mock that fails the merge call but succeeds everything else, so a
@@ -92,16 +129,10 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
-  cat > "$case_dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
-case " $* " in
-  *state,merged*) printf 'OPEN\tfalse\n' ;;
-esac
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
-  : > "$case_dir/gh.log"
+  chmod +x "$case_dir/fakebin/gh-axi"
+  # The failing gh-axi never marks the PR merged, so the shared gh mock answers
+  # from real forge truth: still OPEN, mergedAt still null.
+  write_gh_mock "$case_dir" 1111111111111111111111111111111111111111
 }
 
 run_pr_merge() {
@@ -148,7 +179,7 @@ SH
   [ "$stages" = $'pr-open\nmerged' ] \
     || fail "post-merge reconcile did not match forge truth: $stages"
   merge_calls=$(grep -Fc 'pr merge 16 --repo example/repo --squash' "$case_dir/gh-axi.log")
-  view_calls=$(grep -Fc 'pr view 16 --repo example/repo --json state,merged' "$case_dir/gh.log")
+  view_calls=$(grep -Fc 'pr view 16 --repo example/repo --json state,mergedAt' "$case_dir/gh.log")
   [ "$merge_calls" -eq 1 ] || fail "post-merge recovery invoked merge $merge_calls times"
   [ "$view_calls" -eq 2 ] || fail "post-merge recovery did not re-read forge truth: $view_calls views"
   pass "a failed post-merge emit reconciles from forge truth without repeating merge"
