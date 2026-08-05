@@ -186,7 +186,7 @@ fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 
 $ git diff --check
 (no output)
-
-$ for test_script in tests/*.test.sh; do bash "$test_script"; done
-ALL 71 TEST SCRIPTS PASSED
 ```
+
+This block records only the targeted commands above, each run and observed directly.
+It deliberately carries no whole-suite aggregate result; the suite total is owned by the test runner, not by this document.
