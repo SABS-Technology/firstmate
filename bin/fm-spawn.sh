@@ -105,8 +105,9 @@
 # Per-harness turn-end hooks are installed automatically; some live outside the worktree.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
-# A successful ship or scout launch emits its initial implementation or
-# investigation stage; persistent secondmates are not task work and emit none.
+# A ship or scout durably enters its initial implementation or investigation
+# stage before endpoint, worktree, metadata, artifact, or launch mutation;
+# persistent secondmates are not task work and emit none.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
@@ -779,6 +780,12 @@ real_path_or_raw() {  # <path>
   fi
 }
 
+if [ "$KIND" != secondmate ]; then
+  WORK_STAGE=implementation
+  [ "$KIND" != scout ] || WORK_STAGE=investigation
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" "$WORK_STAGE"
+fi
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -1315,9 +1322,6 @@ if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"
 fi
-if [ "$KIND" != secondmate ]; then
-  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" preflight
-fi
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
@@ -1330,11 +1334,6 @@ if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   spawn_herdr_presentation_order_lock_release
 fi
 spawn_send_key "$T" Enter
-if [ "$KIND" != secondmate ]; then
-  WORK_STAGE=implementation
-  [ "$KIND" != scout ] || WORK_STAGE=investigation
-  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" "$WORK_STAGE"
-fi
 if [ "$KIND" = secondmate ]; then
   if ! fm_config_reread_discard_pending "$PROJ_ABS" "$ID" "$FM_HOME"; then
     if fm_config_reread_quarantine_pending "$PROJ_ABS" "$ID" "$FM_HOME"; then

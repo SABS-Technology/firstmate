@@ -45,6 +45,7 @@ case "$*" in
     exit 0
     ;;
 esac
+[ -z "${FM_FAKE_BACKEND_ACTION_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_BACKEND_ACTION_LOG"
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
@@ -101,6 +102,7 @@ run_settle_spawn() {
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     FM_FAKE_SEND_KEYS_LOG="$HOME_DIR/send-keys.log" \
+    FM_FAKE_BACKEND_ACTION_LOG="$HOME_DIR/backend-actions.log" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" "$@" 2>&1
 }
@@ -165,32 +167,81 @@ test_scout_spawn_emits_investigation() {
   pass "a scout spawn enters investigation rather than implementation"
 }
 
-test_corrupt_stage_ledger_refuses_before_agent_launch() {
-  local rec id out status ledger
-  id=settle-corrupt-stage-z4
-  rec=$(make_settle_case settle-corrupt-stage "$id" 0)
-  read_settle_record "$rec"
-  ledger="$HOME_DIR/state/stage-transitions.tsv"
-  printf 'malformed-existing-row\n' > "$ledger"
-  chmod 0600 "$ledger"
+assert_no_spawn_action_precedes_stage() {  # <task-id> <failure-class>
+  local id=$1 failure=$2 action
+  for action in endpoint-creation worktree-allocation task-artifact-install metadata-publication agent-launch; do
+    case "$action" in
+      endpoint-creation)
+        if [ -f "$HOME_DIR/backend-actions.log" ]; then
+          assert_no_grep 'new-session' "$HOME_DIR/backend-actions.log" \
+            "$failure stage failure created a backend container"
+          assert_no_grep 'new-window' "$HOME_DIR/backend-actions.log" \
+            "$failure stage failure created a backend endpoint"
+        fi
+        ;;
+      worktree-allocation)
+        if [ -f "$HOME_DIR/backend-actions.log" ]; then
+          assert_no_grep 'treehouse get' "$HOME_DIR/backend-actions.log" \
+            "$failure stage failure requested a worktree"
+        fi
+        ;;
+      task-artifact-install)
+        assert_absent "$WT_DIR/.claude/settings.local.json" \
+          "$failure stage failure installed a task hook"
+        assert_absent "$HOME_DIR/state/$id.pi-ext.ts" \
+          "$failure stage failure installed a state-side task artifact"
+        ;;
+      metadata-publication)
+        assert_absent "$HOME_DIR/state/$id.meta" \
+          "$failure stage failure published task metadata"
+        ;;
+      agent-launch)
+        assert_absent "$HOME_DIR/send-keys.log" \
+          "$failure stage failure handed input to an agent"
+        ;;
+    esac
+  done
+}
 
-  set +e
-  out=$(run_settle_spawn "$id")
-  status=$?
-  set -e
-  [ "$status" -ne 0 ] || fail "spawn launched against a corrupt stage ledger"
-  assert_contains "$out" 'stage transition record is unavailable or malformed' \
-    "spawn stage refusal did not identify the corrupt ledger"
-  assert_no_grep 'export GOTMPDIR=' "$HOME_DIR/send-keys.log" \
-    "spawn sent agent launch input before preflighting the stage ledger"
-  [ "$(cat "$ledger")" = 'malformed-existing-row' ] \
-    || fail "spawn stage preflight changed the corrupt ledger"
-  pass "corrupt stage state refuses spawn before any agent launch input"
+test_stage_transition_precedes_every_spawn_action() {
+  local failure rec id out status ledger
+  for failure in unsafe-ledger malformed-ledger clock append-writer; do
+    id="settle-stage-${failure}-z4"
+    rec=$(make_settle_case "settle-stage-$failure" "$id" 0)
+    read_settle_record "$rec"
+    ledger="$HOME_DIR/state/stage-transitions.tsv"
+    case "$failure" in
+      unsafe-ledger)
+        printf 'older-task\timplementation\t2026-08-05T00:00:00Z\n' > "$ledger"
+        chmod 0644 "$ledger"
+        ;;
+      malformed-ledger)
+        printf 'malformed-existing-row\n' > "$ledger"
+        chmod 0600 "$ledger"
+        ;;
+      clock)
+        printf '#!/usr/bin/env bash\nexit 71\n' > "$FAKEBIN_DIR/date"
+        chmod +x "$FAKEBIN_DIR/date"
+        ;;
+      append-writer)
+        printf '#!/usr/bin/env bash\nexit 72\n' > "$FAKEBIN_DIR/perl"
+        chmod +x "$FAKEBIN_DIR/perl"
+        ;;
+    esac
+
+    set +e
+    out=$(run_settle_spawn "$id")
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || fail "$failure did not fail stage emission"
+    assert_no_spawn_action_precedes_stage "$id" "$failure"
+  done
+  pass "every stable stage failure refuses before every irreversible spawn action"
 }
 
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
 test_scout_spawn_emits_investigation
-test_corrupt_stage_ledger_refuses_before_agent_launch
+test_stage_transition_precedes_every_spawn_action
 
 echo "# all fm-spawn-worktree-settle tests passed"

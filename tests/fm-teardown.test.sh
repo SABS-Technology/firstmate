@@ -86,6 +86,7 @@ SH
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 # tmux kill-window etc.: succeed silently.
+[ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 exit 0
 SH
   # Default gh-axi mock: no PR is associated with the branch, and viewing any PR
@@ -501,6 +502,7 @@ run_teardown() {
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+  FM_FAKE_TMUX_LOG="$case_dir/tmux.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" task-x1 "$@"
 }
@@ -526,38 +528,81 @@ test_local_only_fork_remote_allows() {
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
 }
 
-test_corrupt_stage_ledger_refuses_before_cleanup_and_recovers() {
-  local case_dir ledger before rc
-  case_dir=$(make_case corrupt-stage-preflight)
-  write_meta "$case_dir" local-only ship
-  ledger="$case_dir/state/stage-transitions.tsv"
-  printf 'malformed-existing-row\n' > "$ledger"
-  chmod 0600 "$ledger"
-  before=$(shasum -a 256 "$case_dir/state/task-x1.meta")
+assert_no_teardown_action_precedes_stage() {  # <case-dir> <failure-class> <meta-digest> <head>
+  local case_dir=$1 failure=$2 meta_digest=$3 head=$4 action
+  for action in branch-discard task-artifact-removal worktree-return runtime-kill metadata-deletion volatile-state-cleanup; do
+    case "$action" in
+      branch-discard)
+        [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head" ] \
+          && [ "$(git -C "$case_dir/wt" branch --show-current)" = fm/task-x1 ] \
+          || fail "$failure stage failure detached or deleted the task branch"
+        ;;
+      task-artifact-removal)
+        assert_present "$case_dir/wt/.claude/settings.local.json" \
+          "$failure stage failure removed a task hook"
+        ;;
+      worktree-return)
+        assert_absent "$case_dir/treehouse.log" \
+          "$failure stage failure returned the worktree"
+        ;;
+      runtime-kill)
+        assert_absent "$case_dir/tmux.log" \
+          "$failure stage failure killed the runtime endpoint"
+        ;;
+      metadata-deletion)
+        [ "$(shasum -a 256 "$case_dir/state/task-x1.meta")" = "$meta_digest" ] \
+          || fail "$failure stage failure changed task metadata"
+        ;;
+      volatile-state-cleanup)
+        assert_present "$case_dir/state/task-x1.status" \
+          "$failure stage failure removed retry state"
+        ;;
+    esac
+  done
+}
 
-  set +e
-  run_teardown "$case_dir" --force > "$case_dir/corrupt.out" 2> "$case_dir/corrupt.err"
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "teardown cleaned up against a corrupt stage ledger"
-  assert_grep 'stage transition record is unavailable or malformed' "$case_dir/corrupt.err" \
-    "teardown stage refusal did not identify the corrupt ledger"
-  [ "$(shasum -a 256 "$case_dir/state/task-x1.meta")" = "$before" ] \
-    || fail "teardown changed task metadata before stage preflight"
-  assert_present "$case_dir/wt" "teardown returned the worktree before stage preflight"
-  assert_absent "$case_dir/treehouse.log" \
-    "teardown invoked irreversible worktree return before stage preflight"
-  [ "$(cat "$ledger")" = 'malformed-existing-row' ] \
-    || fail "teardown stage preflight changed the corrupt ledger"
+test_stage_transition_precedes_every_teardown_action() {
+  local failure case_dir ledger meta_digest head rc
+  for failure in unsafe-ledger malformed-ledger clock append-writer; do
+    case_dir=$(make_case "stage-$failure")
+    write_meta "$case_dir" local-only ship
+    mkdir -p "$case_dir/wt/.claude"
+    printf '%s\n' hook > "$case_dir/wt/.claude/settings.local.json"
+    printf 'working: fixture\n' > "$case_dir/state/task-x1.status"
+    ledger="$case_dir/state/stage-transitions.tsv"
+    case "$failure" in
+      unsafe-ledger)
+        printf 'older-task\timplementation\t2026-08-05T00:00:00Z\n' > "$ledger"
+        chmod 0644 "$ledger"
+        ;;
+      malformed-ledger)
+        printf 'malformed-existing-row\n' > "$ledger"
+        chmod 0600 "$ledger"
+        ;;
+      clock)
+        printf '#!/usr/bin/env bash\nexit 71\n' > "$case_dir/fakebin/date"
+        chmod +x "$case_dir/fakebin/date"
+        ;;
+      append-writer)
+        printf '#!/usr/bin/env bash\nexit 72\n' > "$case_dir/fakebin/perl"
+        chmod +x "$case_dir/fakebin/perl"
+        ;;
+    esac
+    meta_digest=$(shasum -a 256 "$case_dir/state/task-x1.meta")
+    head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
-  : > "$ledger"
-  run_teardown "$case_dir" --force >/dev/null 2>&1 \
-    || fail "teardown did not recover after explicit stage-ledger repair"
-  assert_absent "$case_dir/state/task-x1.meta" \
-    "successful teardown retained task metadata after complete emission"
-  [ "$(FM_STATE_OVERRIDE="$case_dir/state" "$ROOT/bin/fm-stage.sh" current task-x1)" = complete ] \
-    || fail "recovered teardown did not retain its complete transition"
-  pass "teardown preflights stage state, preserves retry identity, and recovers after repair"
+    set +e
+    run_teardown "$case_dir" --force > "$case_dir/stage.out" 2> "$case_dir/stage.err"
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "$failure did not fail stage emission"
+    if [ -f "$ledger" ]; then
+      assert_no_grep $'\tcomplete\t' "$ledger" \
+        "$failure recorded complete despite a failed stage append"
+    fi
+    assert_no_teardown_action_precedes_stage "$case_dir" "$failure" "$meta_digest" "$head"
+  done
+  pass "every stable stage failure refuses before every irreversible teardown action"
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {
@@ -1450,7 +1495,7 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
 }
 
 test_local_only_fork_remote_allows
-test_corrupt_stage_ledger_refuses_before_cleanup_and_recovers
+test_stage_transition_precedes_every_teardown_action
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses

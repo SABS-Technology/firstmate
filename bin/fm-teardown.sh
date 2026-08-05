@@ -4,7 +4,8 @@
 # clear volatile state, refresh/prune the project's clone for PR-based ship
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
-# Successful ship and scout teardown retains an independent complete stage event.
+# Ship and scout teardown durably enters complete before any destructive cleanup,
+# so a stage emission failure retains every retry identity and local artifact.
 # Before task metadata is deleted, a validated GitHub PR identity is atomically retained as an egress-neutral projection receipt.
 # The receipt is state/linear-pr-receipts/<task-id>.receipt with exactly the schema line, task_id=<task-id>, and pr_url=<canonical-url>.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
@@ -1183,7 +1184,7 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
 fi
 
 if [ "$KIND" != secondmate ]; then
-  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" preflight
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" complete
 fi
 persist_linear_pr_receipt "$META" "$ID" || exit 1
 
@@ -1284,9 +1285,6 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
 elif [ "$BACKEND" = herdr ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   echo "warning: herdr presentation journal for $ID remains quarantined; no workspace cleanup was attempted" >&2
-fi
-if [ "$KIND" != secondmate ]; then
-  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-stage.sh" emit "$ID" complete
 fi
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
