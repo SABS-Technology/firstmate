@@ -97,10 +97,12 @@ test_ship_claim_proof_discipline() {
       "$id: ship brief lost the durable known-open reporting surface"
     assert_grep "cannot be closed within the requested instance" "$brief" \
       "$id: an escape impossible to close in scope has no stated disposition"
-    assert_grep "same defect class beyond the requested instance, name the generalization and escalate it to firstmate" "$brief" \
-      "$id: ship brief lost class-generalization escalation"
-    assert_grep "Do not fix that generalization or expand the round" "$brief" \
+    assert_grep "same defect class beyond the requested instance, and no listed review finding covers that class, name the generalization and escalate it to firstmate" "$brief" \
+      "$id: ship brief lost class-generalization escalation, or applied it to a listed finding's own class"
+    assert_grep "Do not fix that unlisted generalization or expand the round" "$brief" \
       "$id: class generalization could be read as authorizing scope growth"
+    assert_no_grep "same defect class beyond the requested instance, name the generalization" "$brief" \
+      "$id: escalation still swallows the defect class of a listed finding"
     assert_grep "authorizes no follow-up fixing or scope growth" "$brief" \
       "$id: ship brief lost its scope-growth reconciliation"
   done
@@ -113,8 +115,18 @@ test_ship_claim_proof_discipline() {
     "no-mistakes brief lost the gate-round timing rule for escapes"
   assert_grep "Both preserve the validation gate-response contract below" "$brief" \
     "no-mistakes brief lost its self-contained pointer to the gate-response contract"
-  assert_grep "scope growth (rules 3 and 5)." "$brief" \
+  assert_grep "scope growth into an unrelated defect class or unrelated surface (rule 5)." "$brief" \
     "no-mistakes brief lost its explicit gate-response rule reconciliation"
+  # The brief must never both require (rule 5) and forbid (claim-proof item 2)
+  # closing the defect class of a listed finding.
+  assert_grep "The defect class a listed finding belongs to is never such a generalization" "$brief" \
+    "no-mistakes brief lets claim-proof escalation override rule 5's class-closure requirement"
+  assert_grep "escalating it instead of closing it is the instance-only closure rule 5 forbids" "$brief" \
+    "no-mistakes brief does not name instance-only closure as the failure escalation would cause"
+  assert_grep "A defect class that a listed finding does belong to is not this case: it stays in the round and you close it there." "$brief" \
+    "claim-proof item 2 does not keep a listed finding's class in-round"
+  assert_no_grep "scope growth (rules 3 and 5)." "$brief" \
+    "no-mistakes brief still cites rule 5 as blanket authority against closing a listed finding's class"
 
   assert_grep "record it in the PR body as known-open" "$home/data/claim-proof-direct/brief.md" \
     "direct-PR brief must name the PR body as the durable known-open surface"

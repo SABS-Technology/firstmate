@@ -37,8 +37,8 @@
 # gate-response policy; the installed no-mistakes skill and live axi help own
 # version-specific mechanics. Other scaffold variants omit that policy.
 # Every ship brief embeds the claim-proof discipline: falsifying mutations validate
-# only checks already in scope, while broader defect-class generalizations are
-# recorded and escalated without expanding the round. Its gate-response
+# only checks already in scope, while broader defect-class generalizations that no
+# listed finding covers are recorded and escalated without expanding the round. Its gate-response
 # reconciliation and its durable known-open surface are mode-conditional: only
 # no-mistakes briefs cite those rules by number, and each mode names the surface
 # it actually produces.
@@ -360,7 +360,7 @@ EOF
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
     CLAIM_ESCAPE_LATE="   Once a no-mistakes run is active, or if one cannot be closed within the requested instance, stop closing escapes and record it in the PR body as known-open before \`done\` - never pane-only output."
-    CLAIM_SCOPE_NOTE='Both preserve the validation gate-response contract below: escape testing validates only an already-scoped fix and adds no finding or surface, and naming a generalization authorizes no follow-up fixing or scope growth (rules 3 and 5).'
+    CLAIM_SCOPE_NOTE='Both preserve the validation gate-response contract below: escape testing validates only an already-scoped fix and adds no finding or surface (rule 3), and naming an unlisted generalization authorizes no follow-up fixing or scope growth into an unrelated defect class or unrelated surface (rule 5). The defect class a listed finding belongs to is never such a generalization - rule 5 requires you to close that class in the same round, so escalating it instead of closing it is the instance-only closure rule 5 forbids.'
     DOD=$(cat <<EOF
 # Definition of done
 The task is complete only when committed on your branch.
@@ -453,8 +453,9 @@ $RULE1
 1. For each added or changed check meant to prove a claim, name and execute the smallest edits that make the claim false.
    While implementing, close any falsifying edit the check leaves green.
 $CLAIM_ESCAPE_LATE
-2. If an in-scope fix reveals the same defect class beyond the requested instance, name the generalization and escalate it to firstmate.
-   Do not fix that generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.
+2. If an in-scope fix reveals the same defect class beyond the requested instance, and no listed review finding covers that class, name the generalization and escalate it to firstmate.
+   Do not fix that unlisted generalization or expand the round; firstmate decides whether it blocks or becomes separately tracked work.
+   A defect class that a listed finding does belong to is not this case: it stays in the round and you close it there.
 $CLAIM_SCOPE_NOTE
 
 # Project memory
