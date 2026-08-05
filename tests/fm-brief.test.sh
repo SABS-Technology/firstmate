@@ -140,10 +140,14 @@ test_ship_claim_proof_discipline() {
     "claim-proof note reads a rules-2-or-3 deferral as the incomplete closure rule 5 forbids"
   assert_grep "a deferral rule 5 calls purpose-defeating goes to firstmate rather than into a silent follow-up" "$brief" \
     "claim-proof note forbids the escalation rule 5 requires for a purpose-defeating deferral"
-  assert_grep "as far as rules 2 and 3 make its instances fix-eligible" "$brief" \
-    "claim-proof item 2 keeps a listed finding's class in-round past the fix-eligible boundary"
-  assert_grep "one whose deferral would defeat the purpose of the change goes to firstmate as rule 5 requires" "$brief" \
-    "claim-proof item 2 leaves a purpose-defeating deferral no route to firstmate"
+  # Item 2 renders right after the brief's own `# Rules`, whose items 2, 3, and 5
+  # say something else entirely, and before the note that names the contract. Its
+  # citations must carry the "gate-response" qualifier or they resolve to the
+  # wrong list at the point of reading.
+  assert_grep "as far as gate-response rules 2 and 3 make its instances fix-eligible" "$brief" \
+    "claim-proof item 2 keeps a listed finding's class in-round past the fix-eligible boundary, or cites a rule list the reader resolves to the brief's own Rules"
+  assert_grep "one whose deferral would defeat the purpose of the change goes to firstmate as gate-response rule 5 requires" "$brief" \
+    "claim-proof item 2 leaves a purpose-defeating deferral no route to firstmate, or routes it via the brief's own rule 5 instead"
 
   assert_grep "record it in the PR body as known-open" "$home/data/claim-proof-direct/brief.md" \
     "direct-PR brief must name the PR body as the durable known-open surface"
