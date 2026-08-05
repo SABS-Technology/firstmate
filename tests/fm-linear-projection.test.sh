@@ -55,6 +55,7 @@ cat > "$FAKE_GITHUB" <<'EOF'
 #!/usr/bin/env bash
 set -eu
 [ "$#" -eq 1 ]
+[ -z "${FAKE_GITHUB_LOG:-}" ] || printf '%s\n' "$1" >> "$FAKE_GITHUB_LOG"
 jq -cn --arg state "${FAKE_GITHUB_STATE:-open}" --arg checks "${FAKE_GITHUB_CHECKS:-green}" \
   '{state:$state,checks:$checks}'
 EOF
@@ -115,6 +116,7 @@ sync_env() { # <home> [command]
   FM_CAPTAIN_QUEUE_BIN="$FAKE_QUEUE" \
   FM_FAKE_QUEUE_JSON="$home/queue.json" \
   FAKE_LINEAR_LOG="$home/linear.log" \
+  FAKE_GITHUB_LOG="$home/github.log" \
   FAKE_QUEUE_CALLS="$home/queue.calls" \
   "$PROJECTION" "$command"
 }
@@ -333,6 +335,40 @@ test_journal_pr_fallback_survives_metadata_cleanup() {
   pass "journal fallback retains and refreshes a cleaned-up PR without relinking"
 }
 
+test_receipt_pr_fallback_survives_cleanup_before_first_sync() {
+  local home state receipt issue_id attachment_id log summary pr
+  home=$(make_fixture receipt-pr-fallback)
+  state="$home/state/linear-projection.json"
+  receipt="$home/state/linear-pr-receipts/ship-a.receipt"
+  pr='https://github.com/SABS-Technology/firstmate/pull/42'
+  mkdir -p "$(dirname "$receipt")"
+  printf 'fm-linear-pr-receipt.v1\ntask_id=ship-a\npr_url=%s\n' "$pr" > "$receipt"
+  chmod 0600 "$receipt"
+  rm "$home/state/ship-a.meta"
+  assert_absent "$state" "cleanup-before-first-sync fixture unexpectedly had a projection journal"
+
+  summary=$(sync_env "$home") || fail "receipt-backed first sync failed: $summary"
+  log=$(jq -s . "$home/linear.log")
+  issue_id=$(jq -r '.items["ship-a"].remote_issue_id' "$state")
+  attachment_id=$(jq -r '.items["ship-a"].attachment_id' "$state")
+  printf '%s' "$log" | jq -e --arg issue "$issue_id" --arg pr "$pr" '
+    ([.[] | select(.operationName == "CreateIssue"
+      and .variables.input.id == $issue
+      and (.variables.input.description | contains("GitHub PR: \($pr)\nGitHub PR status: open; checks=green")))] | length) == 1
+    and ([.[] | select(.operationName == "LinkGitHubPr"
+      and .variables.issueId == $issue
+      and .variables.url == $pr)] | length) == 1
+  ' >/dev/null || fail "receipt-backed first sync lost or duplicated the PR relationship: $log"
+  [ "$(grep -Fxc "$pr" "$home/github.log")" = 1 ] \
+    || fail "receipt-backed first sync queried GitHub status more than once"
+  jq -e --arg pr "$pr" --arg attachment "$attachment_id" '
+    .items["ship-a"].pr_url == $pr
+    and .items["ship-a"].attachment_id == $attachment
+    and $attachment != ""
+  ' "$state" >/dev/null || fail "first sync did not retain the receipt-backed PR in its journal"
+  pass "a teardown receipt seeds the PR description, attachment, status, and journal exactly once"
+}
+
 test_archive_boundary_never_resurrects_completed_item() {
   local home after_first after_archive after_repeat archive_ops
   home=$(make_fixture archive-boundary)
@@ -531,6 +567,7 @@ test_entities_keep_stage_and_pr_axes_and_link_decisions
 test_pr_links_require_canonical_metadata
 test_unchanged_second_run_is_mutation_free
 test_journal_pr_fallback_survives_metadata_cleanup
+test_receipt_pr_fallback_survives_cleanup_before_first_sync
 test_archive_boundary_never_resurrects_completed_item
 test_journal_preflight_refuses_all_malformed_records_before_transport
 test_stage_corruption_refuses_regression_without_losing_prior_valid_stage

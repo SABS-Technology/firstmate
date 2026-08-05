@@ -252,10 +252,44 @@ def meta_pr(state_dir, task_id):
     return values[-1] if values and PR_RE.fullmatch(values[-1]) else ""
 
 
+def receipt_pr(state_dir, task_id):
+    directory = state_dir / "linear-pr-receipts"
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise ProjectionError("PR receipt invalid")
+    path = directory / f"{task_id}.receipt"
+    if path.is_symlink():
+        raise ProjectionError("PR receipt invalid")
+    if not path.exists():
+        return ""
+    try:
+        metadata = path.stat()
+    except OSError:
+        raise ProjectionError("PR receipt invalid") from None
+    source = regular_text(path, required=True)
+    lines = source.splitlines()
+    if (
+        metadata.st_nlink != 1
+        or metadata.st_mode & 0o777 != 0o600
+        or not source.endswith("\n")
+        or len(lines) != 3
+        or lines[0] != "fm-linear-pr-receipt.v1"
+        or lines[1] != f"task_id={task_id}"
+        or not lines[2].startswith("pr_url=")
+    ):
+        raise ProjectionError("PR receipt invalid")
+    url = lines[2][len("pr_url="):]
+    if not PR_RE.fullmatch(url):
+        raise ProjectionError("PR receipt invalid")
+    return url
+
+
 def find_pr(item, state_dir, journal):
     live_pr = meta_pr(state_dir, item["id"])
     if live_pr:
         return live_pr
+    receipt = receipt_pr(state_dir, item["id"])
+    if receipt:
+        return receipt
     record = journal["items"].get(item["id"])
     return record["pr_url"] if record and not record["archived"] else ""
 

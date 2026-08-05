@@ -519,19 +519,37 @@ test_local_only_fork_remote_allows() {
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {
-  local case_dir out
+  local case_dir out receipt transport transport_called
   case_dir=$(make_case tasks-axi-reminder)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   add_compatible_tasks_axi "$case_dir"
+  transport="$case_dir/fake-linear-transport"
+  transport_called="$case_dir/linear-transport.called"
+  cat > "$transport" <<'SH'
+#!/usr/bin/env bash
+: > "$FM_LINEAR_TRANSPORT_CALLED"
+exit 97
+SH
+  chmod +x "$transport"
 
-  out=$(run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
+  out=$(FM_LINEAR_TRANSPORT="$transport" \
+    FM_LINEAR_TRANSPORT_CALLED="$transport_called" run_teardown "$case_dir") \
+    || fail "teardown failed with compatible tasks-axi"
+  receipt="$case_dir/state/linear-pr-receipts/task-x1.receipt"
   printf '%s\n' "$out" | grep -F 'tasks-axi done task-x1 --pr https://github.com/example/repo/pull/7' >/dev/null \
     || fail "teardown did not prompt tasks-axi done: $out"
   printf '%s\n' "$out" | grep -F 'tasks-axi ready' >/dev/null \
     || fail "teardown did not prompt tasks-axi ready: $out"
   printf '%s\n' "$out" | grep -F 'check date gates' >/dev/null \
     || fail "teardown did not preserve date-gate check: $out"
+  assert_present "$receipt" "teardown deleted PR metadata without publishing its receipt"
+  [ "$(cat "$receipt")" = $'fm-linear-pr-receipt.v1\ntask_id=task-x1\npr_url=https://github.com/example/repo/pull/7' ] \
+    || fail "teardown published a malformed PR receipt"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "teardown retained task metadata after publishing the PR receipt"
+  assert_absent "$transport_called" \
+    "egress-neutral receipt publication invoked the Linear transport"
   printf '%s\n' "$out" | grep -F 'keep Done to the 10 most recent' >/dev/null \
     && fail "teardown kept manual Done pruning in compatible tasks-axi prompt: $out"
   pass "teardown prompts tasks-axi backlog refresh when compatible"

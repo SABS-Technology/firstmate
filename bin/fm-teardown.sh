@@ -5,6 +5,8 @@
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
 # Successful ship and scout teardown retains an independent complete stage event.
+# Before task metadata is deleted, a validated GitHub PR identity is atomically retained as an egress-neutral projection receipt.
+# The receipt is state/linear-pr-receipts/<task-id>.receipt with exactly the schema line, task_id=<task-id>, and pr_url=<canonical-url>.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -161,6 +163,69 @@ default_branch() {
 meta_value() {
   local meta=$1 key=$2
   fm_meta_get "$meta" "$key"
+}
+
+persist_linear_pr_receipt() {  # <meta> <task-id>
+  local meta=$1 task_id=$2 dir="$STATE/linear-pr-receipts" dest tmp='' device
+  [ -n "$PR_URL" ] || return 0
+  if ! fm_pr_metadata_identity_parse "$meta"; then
+    echo "error: canonical PR metadata is invalid; refusing to delete $meta" >&2
+    return 1
+  fi
+  [ "$FM_PR_META_PROVIDER" = github ] || return 0
+  if [ "$FM_PR_META_URL" != "$PR_URL" ]; then
+    echo "error: canonical GitHub PR metadata is invalid; refusing to delete $meta" >&2
+    return 1
+  fi
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    [ -d "$dir" ] && [ ! -L "$dir" ] || {
+      echo "error: Linear PR receipt directory is unsafe: $dir" >&2
+      return 1
+    }
+  else
+    (umask 077; mkdir "$dir") || {
+      echo "error: could not create Linear PR receipt directory: $dir" >&2
+      return 1
+    }
+  fi
+  device=$(fm_pr_file_device "$STATE") || return 1
+  [ "$(fm_pr_file_device "$dir")" = "$device" ] || {
+    echo "error: Linear PR receipt directory is on a different device: $dir" >&2
+    return 1
+  }
+  dest="$dir/$task_id.receipt"
+  tmp=$(umask 077; mktemp "$dir/.${task_id}.receipt.XXXXXX") || return 1
+  if ! printf 'fm-linear-pr-receipt.v1\ntask_id=%s\npr_url=%s\n' \
+      "$task_id" "$FM_PR_META_URL" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! fm_pr_private_file_valid "$tmp" 600 "$device"; then
+    rm -f -- "$tmp"
+    echo "error: could not prepare Linear PR receipt for $task_id" >&2
+    return 1
+  fi
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    if fm_pr_private_file_valid "$dest" 600 "$device" && cmp -s "$dest" "$tmp"; then
+      rm -f -- "$tmp"
+      return 0
+    fi
+    rm -f -- "$tmp"
+    echo "error: conflicting Linear PR receipt for $task_id" >&2
+    return 1
+  fi
+  if ! ln -- "$tmp" "$dest" 2>/dev/null; then
+    if fm_pr_private_file_valid "$dest" 600 "$device" && cmp -s "$dest" "$tmp"; then
+      rm -f -- "$tmp"
+      return 0
+    fi
+    rm -f -- "$tmp"
+    echo "error: could not atomically publish Linear PR receipt for $task_id" >&2
+    return 1
+  fi
+  rm -f -- "$tmp"
+  fm_pr_private_file_valid "$dest" 600 "$device" || {
+    echo "error: published Linear PR receipt is invalid for $task_id" >&2
+    return 1
+  }
 }
 
 require_orca_worktree_id() {
@@ -1090,6 +1155,8 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     fi
   fi
 fi
+
+persist_linear_pr_receipt "$META" "$ID" || exit 1
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then

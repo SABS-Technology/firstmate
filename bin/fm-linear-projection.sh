@@ -9,8 +9,9 @@
 # config/linear-projection.json contract documented in docs/configuration.md.
 # It reads the canonical captain queue through fm-captain-queue.sh --json,
 # resolves stages only from state/stage-transitions.tsv, and never writes the
-# backlog, archive, or stage ledger. Projection receipts live in the private
-# state/linear-projection.json journal.
+# backlog, archive, or stage ledger.
+# Projection receipts live in the private state/linear-projection.json journal.
+# A validated state/linear-pr-receipts/<task-id>.receipt preserves canonical GitHub PR identity across teardown before the first sync.
 #
 # Set FM_LINEAR_TRANSPORT to an executable that accepts one GraphQL request on
 # stdin and returns {"status":<http-status>,"body":<graphql-json>} for tests or

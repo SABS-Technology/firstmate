@@ -96,6 +96,7 @@ state/               volatile runtime signals; gitignored
   captain-ruling.check.sh  generated global registered check for captain replies written outside chat; invokes bin/fm-captain-ruling-check.sh
   .captain-rulings-seen    private durable answer-digest set preventing repeat ruling wakes across polls and restarts
   stage-transitions.tsv  append-only work-stage ledger written by fm-stage.sh: <task-id>, stage, UTC timestamp; a separate axis from <id>.status, never derived from it, and retained across teardown
+  linear-pr-receipts/<id>.receipt  validated egress-neutral GitHub PR identity retained atomically by teardown before task metadata cleanup; exact fields and publication mechanics are owned by bin/fm-teardown.sh
   linear-projection.json  private Linear projection journal: remote ids, source digests, per-item revisions, attachment receipts, and archive tombstones; never a credential or vendor response body (docs/configuration.md "Linear projection")
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
   <id>.pr-poll-registration  private transactional provenance record binding the task, canonical metadata identity, sidecar, and static poll publication

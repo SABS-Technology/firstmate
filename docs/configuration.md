@@ -46,6 +46,7 @@ The file must contain exactly `schema`, `workspace_id`, `team_id`, `untracked_st
 The API credential remains only in `LINEAR_API_KEY` and must never be placed in this file.
 Projection egress is fail-closed unless `FM_LINEAR_PROJECTION_ENABLED=1`, the credential is present, and this complete workspace contract is valid.
 The projection journal is private `state/linear-projection.json`; it stores deterministic remote ids, source digests, monotonic per-item revisions, attachment receipts, and archive tombstones, but no credential or vendor response body.
+Before deleting task metadata, teardown atomically retains any validated canonical GitHub PR identity in the egress-neutral receipt owned by `bin/fm-teardown.sh`; first sync consults that receipt after live metadata and before the projection journal without invoking transport during cleanup.
 Firstmate records remain authoritative: the projection reads the canonical `fm-captain-queue.sh --json` result, the backlog and archive, and the stage ledger, while only Linear and its private journal can be mutated.
 GitHub pull requests are Linear attachments with `linkKind: links`; the projection never supplies `parentId`, so captain decisions remain peer issues linked to their PRs rather than PR sub-items.
 After a workspace exists, the live handoff is one command with the local config in place: `FM_LINEAR_PROJECTION_ENABLED=1 LINEAR_API_KEY=<key> bin/fm-linear-projection.sh sync`.
