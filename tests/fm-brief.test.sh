@@ -208,8 +208,12 @@ test_no_mistakes_gate_response_contract_is_ship_only() {
     "gate-response contract lost the firstmate-owned continuation checkpoint"
   assert_no_grep 'separate cap of 4' "$ship" \
     "gate-response contract leaked the captain-private firstmate cap"
-  assert_grep 'Freeze scope per round, not per finding' "$ship" \
-    "gate-response contract lost round-level scope freeze"
+  assert_grep 'Close the full defect class each listed finding belongs to; closing only the listed instances is an incomplete fix, not a bounded one.' "$ship" \
+    "gate-response contract lets a fixer stop at listed instances instead of closing their defect class"
+  assert_grep 'name the class you believe it belongs to in your gate response and state the class you are closing' "$ship" \
+    "gate-response contract does not make the fixer declare the broader class it is closing"
+  assert_grep 'Do not expand the round into an unrelated defect class or unrelated surface' "$ship" \
+    "gate-response contract lost the boundary against unrelated scope growth"
   assert_grep 'A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.' "$ship" \
     "gate-response contract weakened the security floor"
 

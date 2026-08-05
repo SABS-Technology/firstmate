@@ -380,7 +380,11 @@ This keeps each review round focused, bounded, and security-safe.
 4. After three fix rounds in one review step, STOP before opening a fourth.
    Append \`needs-decision: review step still returning findings after 3 rounds - {one-line outstanding summary}\` and wait for firstmate.
    This is a checkpoint, not the final limit: firstmate owns whether the run continues, and it carries its own separate cap you are not told.
-5. Freeze scope per round, not per finding: fix exactly the listed findings; report any newly required surface or newly spotted issue as a follow-up candidate instead of expanding the round.
+5. Freeze unrelated scope per round, not the defect class of a listed finding.
+   Close the full defect class each listed finding belongs to; closing only the listed instances is an incomplete fix, not a bounded one.
+   When a finding reads as one instance of a broader class, name the class you believe it belongs to in your gate response and state the class you are closing.
+   Include other instances and directly required surfaces needed to close that class.
+   Do not expand the round into an unrelated defect class or unrelated surface; report either as a follow-up candidate.
 6. A reachable PHI exposure, auth bypass, or credential leak blocks regardless of severity, including when pre-existing.
    If unsure whether an issue clears this bar, escalate to firstmate.
 
