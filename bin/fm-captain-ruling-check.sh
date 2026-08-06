@@ -139,6 +139,17 @@ captain_hold_is_replyable() {  # <hold-id> <queue-json>
   ' >/dev/null <<< "$2"
 }
 
+captain_replyable_ids() {  # <queue-json>
+  jq -r '
+    if .schema == "fm-captain-queue.v1"
+      and (.items | type) == "array"
+      and all(.items[]; (.id | type) == "string" and (.replyable | type) == "boolean")
+    then .items[] | select(.replyable == true) | .id
+    else error("invalid captain queue")
+    end
+  ' <<< "$1"
+}
+
 reply_candidates() {
   fm_ruling_reply_candidates
 }
@@ -207,7 +218,7 @@ acknowledge_rulings() {
 }
 
 detect_rulings() {
-  local id answer _origin answer_digest digest hashes='' ids='' candidates queue notification replyable
+  local id answer _origin answer_digest digest hashes='' ids='' candidates queue notification replyable replyable_ids
   local revision_hashes='' revision_ids=''
   local possible_disagreements='' disagreement_ids='' disagreement_hashes='' second_queue
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
@@ -216,8 +227,18 @@ detect_rulings() {
     return 0
   fi
   candidates=$(reply_candidates)
-  [ -n "$candidates" ] || return 0
   queue=$(captain_queue) || return 0
+  replyable_ids=$(captain_replyable_ids "$queue") || return 0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    fm_pr_task_id_valid "$id" || return 0
+    fm_ruling_committed_record "$id" || return 0
+    [ -n "$FM_RULING_COMMITTED_DECISION" ] || continue
+    case ",$possible_disagreements," in
+      *",$id,"*) ;;
+      *) possible_disagreements="${possible_disagreements:+$possible_disagreements,}$id" ;;
+    esac
+  done <<< "$replyable_ids"
   while IFS=$'\t' read -r id answer _origin; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
     answer_digest=$(fm_ruling_sha256 "$answer") || return 0
@@ -225,12 +246,6 @@ detect_rulings() {
     fm_ruling_committed_record "$id" || return 0
     replyable=0
     captain_hold_is_replyable "$id" "$queue" && replyable=1
-    if [ "$replyable" = 1 ] && [ -n "$FM_RULING_COMMITTED_DECISION" ]; then
-      case ",$possible_disagreements," in
-        *",$id,"*) ;;
-        *) possible_disagreements="${possible_disagreements:+$possible_disagreements,}$id" ;;
-      esac
-    fi
     if [ "$FM_RULING_LAST_TYPE" = REPLY ] \
       && [ "$FM_RULING_LAST_DECISION" = "$answer_digest" ] \
       && [ -n "$FM_RULING_COMMITTED_DECISION" ]; then

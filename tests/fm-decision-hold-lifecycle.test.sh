@@ -708,6 +708,70 @@ test_chat_ruling_records_multiline_and_resolves_end_to_end() {
   pass "multiline chat ruling records, releases dependent work, and closes without captain file input"
 }
 
+test_interrupted_chat_ruling_commit_wakes_without_reply_file() {
+  local home origin=sample-chat-interruption key=route hold record dependent before after show wake log ruling
+  home=$(make_home chat-ruling-interruption)
+  hold="$origin-decision-$key"
+  dependent=sample-chat-interruption-work
+  record="$home/data/decisions/$hold.md"
+  log="$home/state/captain-ruling-log.tsv"
+  ruling=$'Use the east route for this rollout.\nKeep the west route available as the documented fallback.'
+  mkdir -p "$home/data/$origin" "$home/data/decisions"
+  tasks_in "$home" add "$origin" "Review the interrupted chat ruling" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the interrupted chat-ruling origin"
+  write_origin_meta "$home" "$origin"
+  printf '# Interrupted chat ruling\n\nThe captain must select the route.\n' \
+    > "$home/data/$origin/report.md"
+  run_decisions "$home" hold "$origin" "$key" \
+    --title "Choose the interrupted chat ruling route" \
+    --reason "captain chat route pending" --repo sample >/dev/null \
+    || fail "could not create the interrupted chat-ruling hold"
+  run_decisions "$home" complete "$origin" "$key" >/dev/null \
+    || fail "could not complete the interrupted chat-ruling inventory"
+  printf '%s\n' "$ruling" > "$record"
+  chmod 0600 "$record"
+  printf '%s\n' "$ruling" \
+    | run_decisions "$home" record-ruling "$hold" --origin chat >/dev/null \
+    || fail "could not record the interrupted chat ruling"
+  tasks_in "$home" add "$dependent" "Apply the interrupted chat ruling" \
+    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null \
+    || fail "could not create work behind the interrupted chat-ruling hold"
+  before=$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = update ] && [ "${2:-}" = "$FM_TEST_INTERRUPT_HOLD" ]; then
+  exit 75
+fi
+exec "$REAL_TASKS_AXI" "$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+  if FM_TEST_INTERRUPT_HOLD="$hold" run_decisions "$home" resolve "$origin" "$key" \
+    --decision-file "$record" --routed-to "$dependent" \
+    > "$home/interrupted-resolve.out" 2> "$home/interrupted-resolve.err"; then
+    fail "chat ruling resolve completed despite the pre-backlog interruption"
+  fi
+  after=$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')
+  [ "$before" = "$after" ] \
+    || fail "pre-backlog interruption mutated the backlog"
+  grep -Eq $'^COMMIT\tv2\t'"$hold"$'\t[0-9a-f]{64}\t[0-9a-f]{64}\tchat$' "$log" \
+    || fail "pre-backlog interruption did not leave the chat COMMIT durable"
+  assert_absent "$home/data/captain-replies.md" \
+    "chat interruption regression accidentally depended on the captain reply file"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" 'state: queued' \
+    "pre-backlog interruption unexpectedly closed the captain hold"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" 'blocked: yes' \
+    "pre-backlog interruption unexpectedly released dependent work"
+  wake=$(FM_HOME="$home" FM_CAPTAIN_RULING_DISAGREEMENT_RECHECK_DELAY=0 "$RULING_CHECK") \
+    || fail "chat interruption disagreement detector failed"
+  [ "$wake" = "captain-ruling-error queue-log-disagreement $hold" ] \
+    || fail "chat-origin interrupted COMMIT emitted no disagreement wake: $wake"
+  pass "a chat-origin COMMIT interrupted before backlog mutation wakes for recovery"
+}
+
 test_chat_transcription_cannot_claim_captain_typed_origin() {
   local home id=sample-chat-origin-guard log
   home=$(make_home chat-origin-guard)
@@ -1787,6 +1851,7 @@ test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
 test_chat_ruling_records_multiline_and_resolves_end_to_end
+test_interrupted_chat_ruling_commit_wakes_without_reply_file
 test_chat_transcription_cannot_claim_captain_typed_origin
 test_legacy_ruling_log_resolves_through_version_bump
 test_rehold_requires_canonical_identity_fields
