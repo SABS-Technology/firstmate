@@ -96,7 +96,7 @@ state/               volatile runtime signals; gitignored
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
   captain-ruling.check.sh  generated global registered check for captain replies written outside chat; invokes bin/fm-captain-ruling-check.sh
   .captain-rulings-seen    private durable answer-digest set preventing repeat ruling wakes across polls and restarts
-  captain-ruling-log.tsv  private append-only REPLY/COMMIT log whose first COMMIT snapshots the observed ruling; later replies are new decisions requiring explicit revocation
+  captain-ruling-log.tsv  private append-only versioned REPLY/COMMIT log carrying ruling origin; legacy rows remain readable, the first COMMIT snapshots the observed ruling, and later replies require explicit revocation
   stage-transitions.tsv  append-only work-stage ledger written by fm-stage.sh: <task-id>, stage, UTC timestamp; a separate axis from <id>.status, never derived from it, and retained across teardown
   linear-pr-receipts/<id>.receipt  validated egress-neutral GitHub PR identity retained atomically by teardown before task metadata cleanup; exact fields and publication mechanics are owned by bin/fm-teardown.sh
   linear-projection.json  private Linear projection journal: remote ids, source digests, per-item revisions, attachment receipts, and archive tombstones; never a credential or vendor response body (docs/configuration.md "Linear projection")

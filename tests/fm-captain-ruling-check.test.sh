@@ -399,6 +399,7 @@ SH
 
   long_id=$(awk 'BEGIN { for (i = 0; i < 4022; i++) printf "a" }')
   for shape in truncated partial-final-field no-final-newline invalid-utf8 unknown-record \
+    invalid-v2-version missing-v2-origin invalid-v2-origin \
     directory fifo mode-0644 mode-000 permission-error zero-byte nul-only embedded-nul crlf utf8-bom extra-blank-line \
     exactly-4096; do
     rm -rf "$log"
@@ -418,6 +419,15 @@ SH
         ;;
       unknown-record)
         printf 'UNKNOWN\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        ;;
+      invalid-v2-version)
+        printf 'REPLY\tv3\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\tchat\n' > "$log"
+        ;;
+      missing-v2-origin)
+        printf 'REPLY\tv2\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\n' > "$log"
+        ;;
+      invalid-v2-origin)
+        printf 'REPLY\tv2\treview-decision-route\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t-\tfirstmate\n' > "$log"
         ;;
       directory)
         mkdir "$log"

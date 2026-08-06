@@ -642,6 +642,123 @@ test_detected_ruling_becomes_work_before_hold_closes() {
   pass "a detected ruling becomes durable dependent work before its hold closes"
 }
 
+test_chat_ruling_records_multiline_and_resolves_end_to_end() {
+  local home origin=sample-chat-review key=route hold record dependent show queue log ruling record_output
+  home=$(make_home chat-ruling-round-trip)
+  hold="$origin-decision-$key"
+  dependent=sample-chat-implementation
+  record="$home/data/decisions/$hold.md"
+  log="$home/state/captain-ruling-log.tsv"
+  ruling=$'Use the east route for this rollout.\nKeep the west route available as the documented fallback.'
+  mkdir -p "$home/data/$origin" "$home/data/decisions"
+  tasks_in "$home" add "$origin" "Review the chat ruling route" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the chat-ruling origin"
+  write_origin_meta "$home" "$origin"
+  printf '# Chat ruling review\n\nThe captain must select the route.\n' \
+    > "$home/data/$origin/report.md"
+  run_decisions "$home" hold "$origin" "$key" \
+    --title "Choose the chat ruling route" \
+    --reason "captain chat route pending" --repo sample >/dev/null \
+    || fail "could not create the chat-ruling hold"
+  run_decisions "$home" complete "$origin" "$key" >/dev/null \
+    || fail "could not complete the chat-ruling inventory"
+
+  printf '%s\n' "$ruling" > "$record"
+  chmod 0644 "$record"
+  if run_decisions "$home" record-ruling "$hold" --origin chat --ruling-file "$record" \
+    > "$home/public-file.out" 2> "$home/public-file.err"; then
+    fail "chat ruling accepted a nonprivate ruling file"
+  fi
+  assert_grep 'ruling file must be a private mode-0600 regular file' "$home/public-file.err" \
+    "nonprivate ruling file was rejected for the wrong reason"
+  assert_absent "$log" "rejected nonprivate ruling file still wrote the ruling log"
+  chmod 0600 "$record"
+  record_output=$(printf '%s\n' "$ruling" \
+    | run_decisions "$home" record-ruling "$hold" --origin chat) \
+    || fail "firstmate could not record the multiline chat ruling from stdin"
+  assert_contains "$record_output" 'quote back to captain before dependent work proceeds:' \
+    "chat recording omitted the mandatory quote-back prompt"
+  assert_contains "$record_output" "$ruling" \
+    "chat recording did not return the exact ruling for quote-back"
+  grep -Eq $'^REPLY\tv2\t'"$hold"$'\t[0-9a-f]{64}\t-\tchat$' "$log" \
+    || fail "chat ruling did not retain its explicit origin in the versioned log"
+
+  tasks_in "$home" add "$dependent" "Apply the captain-selected chat route" \
+    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null \
+    || fail "firstmate could not create chat-ruling dependent work"
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to "$dependent" >/dev/null \
+    || fail "the recorded chat ruling did not close the hold"
+
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "chat ruling did not close the captain decision"
+  assert_contains "$show" 'Use the east route for this rollout.\nKeep the west route available as the documented fallback.' \
+    "chat ruling did not preserve its multiline text"
+  show=$(tasks_in "$home" show "$dependent" --full)
+  assert_contains "$show" "blocked: no" "chat ruling did not release dependent work"
+  grep -Eq $'^COMMIT\tv2\t'"$hold"$'\t[0-9a-f]{64}\t[0-9a-f]{64}\tchat$' "$log" \
+    || fail "resolver did not carry the chat origin into the commit event"
+  queue=$(FM_HOME="$home" "$CAPTAIN_QUEUE" --json) \
+    || fail "captain queue failed after the chat ruling round trip"
+  printf '%s' "$queue" | jq -e --arg hold "$hold" \
+    'all(.items[]; .id != $hold)' >/dev/null \
+    || fail "chat-resolved decision remained in the open-decision query: $queue"
+  pass "multiline chat ruling records, releases dependent work, and closes without captain file input"
+}
+
+test_chat_transcription_cannot_claim_captain_typed_origin() {
+  local home id=sample-chat-origin-guard log
+  home=$(make_home chat-origin-guard)
+  log="$home/state/captain-ruling-log.tsv"
+  if printf 'Use the east route.\n' \
+    | run_decisions "$home" record-ruling "$id" --origin captain-typed \
+      > "$home/captain-typed.out" 2> "$home/captain-typed.err"; then
+    fail "firstmate transcription claimed the captain-typed origin"
+  fi
+  assert_grep 'origin captain-typed is reserved for the captain-owned reply-file adapter' "$home/captain-typed.err" \
+    "captain-typed provenance guard failed for the wrong reason: $(cat "$home/captain-typed.err")"
+  assert_absent "$log" "rejected captain-typed transcription still wrote the ruling log"
+  if printf 'Use the east route.\n' \
+    | run_decisions "$home" record-ruling "$id" --origin linear \
+      > "$home/linear.out" 2> "$home/linear.err"; then
+    fail "unauthenticated firstmate transcription claimed the reserved linear origin"
+  fi
+  assert_grep 'origin linear is reserved for a later authenticated adapter' "$home/linear.err" \
+    "reserved linear provenance guard failed for the wrong reason: $(cat "$home/linear.err")"
+  assert_absent "$log" "rejected linear transcription still wrote the ruling log"
+  pass "chat transcription cannot be recorded as a captain signature"
+}
+
+test_legacy_ruling_log_resolves_through_version_bump() {
+  local home origin=sample-legacy-review key=route hold record dependent digest log show
+  hold="$origin-decision-$key"
+  dependent=sample-legacy-implementation
+  home=$(make_ruling_home legacy-ruling-log "$origin" "$key" 'Use the legacy route.')
+  record="$home/data/decisions/$hold.md"
+  log="$home/state/captain-ruling-log.tsv"
+  digest=$(printf '%s' 'Use the legacy route.' | shasum -a 256 | awk '{print $1}')
+  printf 'REPLY\t%s\t%s\t-\n' "$hold" "$digest" > "$log"
+  chmod 0600 "$log"
+  rm -f "$home/data/captain-replies.md"
+  tasks_in "$home" add "$dependent" "Apply the legacy ruling" \
+    --kind ship --repo sample --body "Decision record: data/decisions/$hold.md" \
+    --blocked-by "$hold" >/dev/null \
+    || fail "could not create the legacy-ruling dependent"
+
+  run_decisions "$home" resolve "$origin" "$key" --decision-file "$record" \
+    --routed-to "$dependent" >/dev/null \
+    || fail "old-format ruling log stopped resolving after the schema bump"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "legacy ruling did not close its hold"
+  grep -Eq $'^REPLY\t'"$hold"$'\t[0-9a-f]{64}\t-$' "$log" \
+    || fail "resolver rewrote the legacy record instead of reading it compatibly"
+  grep -Eq $'^COMMIT\tv2\t'"$hold"$'\t[0-9a-f]{64}\t[0-9a-f]{64}\tcaptain-typed$' "$log" \
+    || fail "legacy captain-typed origin was not migrated into the versioned commit"
+  pass "old-format ruling log remains readable and resolvable after the version bump"
+}
+
 test_rehold_requires_canonical_identity_fields() {
   local home origin=sample-collision-review key=route hold title show queue
   hold="$origin-decision-$key"
@@ -1577,7 +1694,7 @@ test_multi_answer_history_preserves_committed_retry() {
     fm_ruling_reply_candidates
   ' _ "$ROOT/bin" "$home/state" "$home/data") \
     || fail "committed multi-answer history could not be ingested twice"
-  [ "$answer" = "$hold"$'\t''Use the west route.' ] \
+  [ "$answer" = "$hold"$'\t''Use the west route.'$'\t''captain-typed' ] \
     || fail "multi-answer history did not collapse to the latest complete answer"
   after=$(shasum -a 256 "$log")
   [ "$before" = "$after" ] \
@@ -1642,6 +1759,8 @@ test_ruling_wake_loads_the_single_lifecycle_owner() {
     "AGENTS.md does not load the decision owner for ruling and revision wakes"
   for phrase in \
     'bin/fm-captain-ruling-check.sh --answer' \
+    'record-ruling <hold-id> --origin chat' \
+    'Quote that ruling verbatim to the captain in chat before' \
     'data/decisions/<hold-id>.md' \
     'tasks-axi add' \
     '--blocked-by <hold-id>' \
@@ -1667,6 +1786,9 @@ test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
 test_detected_ruling_becomes_work_before_hold_closes
+test_chat_ruling_records_multiline_and_resolves_end_to_end
+test_chat_transcription_cannot_claim_captain_typed_origin
+test_legacy_ruling_log_resolves_through_version_bump
 test_rehold_requires_canonical_identity_fields
 test_resolve_requires_canonical_record_and_routed_pointer
 test_resolve_enforces_session_lock_and_stable_dependent_set

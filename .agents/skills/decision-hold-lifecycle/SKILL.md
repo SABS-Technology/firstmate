@@ -39,6 +39,14 @@ A status change is not ruling ingestion and must never substitute for the decisi
 
 ## Captain-ruling ingestion turn
 
+When the captain answers a decision directly in chat, identify the matching structured captain-held item from fleet state without asking the captain for its id.
+Copy the captain's exact answer verbatim into the canonical mode-0600 private record `data/decisions/<hold-id>.md`, preserving multiple sentences and lines.
+Run `bin/fm-decision-hold.sh record-ruling <hold-id> --origin chat --ruling-file data/decisions/<hold-id>.md`; never pass ruling prose in argv.
+The command returns the exact recorded ruling as a quote-back prompt.
+Quote that ruling verbatim to the captain in chat before creating, starting, or unblocking dependent work, so the captain can catch a bad transcription before work proceeds.
+Do not claim origin `captain-typed` for a firstmate transcription; that origin belongs only to the captain-owned reply-file adapter.
+Origin `linear` is reserved for a later authenticated adapter and has no operating path yet.
+
 When a `check:` wake contains `captain-ruling <hold-id>[,<hold-id>...]`, process every named identity in the authoritative `FM_HOME` before returning to routine queue work.
 When it contains `captain-ruling-revision <hold-id>[,<hold-id>...]`, the named identity already has a committed ruling and the edited answer is a new decision.
 Read the revised answer, inspect the committed decision record and routed work, and register a new stable captain-held decision that asks for explicit revocation or retention of the committed ruling.
@@ -54,7 +62,7 @@ Create that work with normal `tasks-axi add` fields and `--blocked-by <hold-id>`
 Keep every dependent item in the same authoritative home as the hold and point its durable body or brief at the decision record rather than copying the ruling into multiple owners.
 For an ordinary-kind item, keep the existing work item as the implementation owner and do not invent a dependent, clear its work dependencies, or complete it as part of ruling resolution.
 Write the captain's exact answer to the private durable record `data/decisions/<hold-id>.md` in that home.
-Record the captain's reply verbatim, because the first `resolve` commits only when the observed REPLY record matches it.
+Record the captain's reply verbatim, because the first `resolve` commits only when the accepted recorded ruling for that decision matches it, regardless of origin.
 For a captain-kind hold, call `bin/fm-decision-hold.sh resolve <origin-id> <decision-key> --decision-file data/decisions/<hold-id>.md --routed-to <task-id>` with every routed identity.
 `resolve` also refuses while any task it discovers is still blocked by a captain-kind hold and absent from `--routed-to`, so route each such task rather than working around the refusal.
 For an ordinary-kind item, call `bin/fm-decision-hold.sh resolve-item <hold-id> --decision-file data/decisions/<hold-id>.md`; that command clears only the captain hold and leaves the work active.

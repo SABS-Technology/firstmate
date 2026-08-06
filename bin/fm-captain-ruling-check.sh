@@ -207,7 +207,7 @@ acknowledge_rulings() {
 }
 
 detect_rulings() {
-  local id answer answer_digest digest hashes='' ids='' candidates queue notification replyable
+  local id answer _origin answer_digest digest hashes='' ids='' candidates queue notification replyable
   local revision_hashes='' revision_ids=''
   local possible_disagreements='' disagreement_ids='' disagreement_hashes='' second_queue
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 0
@@ -218,7 +218,7 @@ detect_rulings() {
   candidates=$(reply_candidates)
   [ -n "$candidates" ] || return 0
   queue=$(captain_queue) || return 0
-  while IFS=$'\t' read -r id answer; do
+  while IFS=$'\t' read -r id answer _origin; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
     answer_digest=$(fm_ruling_sha256 "$answer") || return 0
     fm_ruling_last_record "$id" || return 0
