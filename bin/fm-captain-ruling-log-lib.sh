@@ -20,6 +20,7 @@
 
 FM_RULING_LOG=${FM_CAPTAIN_RULING_LOG_OVERRIDE:-$STATE/captain-ruling-log.tsv}
 FM_RULING_REPLIES=${FM_CAPTAIN_REPLIES_OVERRIDE:-${DATA:-$FM_HOME/data}/captain-replies.md}
+FM_RULING_DECISIONS=${FM_DATA_OVERRIDE:-${DATA:-$FM_HOME/data}}/decisions
 FM_RULING_LAST_TYPE=
 FM_RULING_LAST_DECISION=
 FM_RULING_LAST_ROUTES=
@@ -28,6 +29,7 @@ FM_RULING_COMMITTED_DECISION=
 FM_RULING_COMMITTED_ROUTES=
 FM_RULING_COMMITTED_ORIGIN=
 FM_RULING_LAST_REPLY_DECISION=
+FM_RULING_LAST_REPLY_ORIGIN=
 FM_RULING_COMMIT_RETRY=0
 FM_RULING_COMMIT_CONFLICT=
 
@@ -123,13 +125,15 @@ fm_ruling_last_record() {  # <hold-id>
 }
 
 fm_ruling_last_reply_record() {  # <hold-id>
-  local wanted=$1 type id decision _routes _origin
+  local wanted=$1 type id decision _routes origin
   FM_RULING_LAST_REPLY_DECISION=
+  FM_RULING_LAST_REPLY_ORIGIN=
   fm_ruling_log_valid || return 1
   [ -f "$FM_RULING_LOG" ] || return 1
-  while IFS=$'\t' read -r type id decision _routes _origin; do
+  while IFS=$'\t' read -r type id decision _routes origin; do
     [ "$type" = REPLY ] && [ "$id" = "$wanted" ] || continue
     FM_RULING_LAST_REPLY_DECISION=$decision
+    FM_RULING_LAST_REPLY_ORIGIN=$origin
   done < <(fm_ruling_records) || return 1
   [ -n "$FM_RULING_LAST_REPLY_DECISION" ]
 }
@@ -182,6 +186,48 @@ fm_ruling_reply_candidates() {
   '
 }
 
+fm_ruling_read_private_decision() {  # <hold-id> <path>
+  local id=$1 path=$2 canonical="$FM_RULING_DECISIONS/$1.md" device
+  fm_pr_task_id_valid "$id" || return 1
+  [ "$path" = "$canonical" ] || return 1
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
+  device=$(fm_pr_file_device "$STATE") || return 1
+  command -v perl >/dev/null 2>&1 || return 1
+  perl -MFcntl=:DEFAULT -e '
+    my ($path, $device) = @ARGV;
+    exit 1 unless $device =~ /\A[0-9]+\z/;
+    sysopen(my $file, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or exit 1;
+    my @stat = stat($file);
+    exit 1 unless @stat && -f _ && $stat[0] == $device && 1 == $stat[3]
+      && ($stat[2] & 07777) == 0600 && 0 < $stat[7] && $stat[7] <= 8192;
+    binmode($file, ":raw") or exit 1;
+    my ($buffer, $total) = ("", 0);
+    while (1) {
+      my $read = sysread($file, my $chunk, 4096);
+      exit 1 unless defined $read;
+      last if $read == 0;
+      $total += $read;
+      exit 1 if $total > 8192;
+      $buffer .= $chunk;
+    }
+    close($file) or exit 1;
+    exit 1 unless $total == $stat[7];
+    print $buffer or exit 1;
+  ' "$path" "$device" 2>/dev/null
+}
+
+fm_ruling_chat_answer() {  # <hold-id>
+  local id=$1 answer digest
+  fm_ruling_last_record "$id" || return 1
+  case "$FM_RULING_LAST_TYPE" in REPLY|COMMIT) ;; *) return 1 ;; esac
+  [ "$FM_RULING_LAST_ORIGIN" = chat ] || return 1
+  answer=$(fm_ruling_read_private_decision "$id" "$FM_RULING_DECISIONS/$id.md") || return 1
+  [ -n "$answer" ] || return 1
+  digest=$(fm_ruling_sha256 "$answer") || return 1
+  [ "$digest" = "$FM_RULING_LAST_DECISION" ] || return 1
+  printf '%s\n' "$answer"
+}
+
 fm_ruling_record() {  # <origin> <hold-id> <answer>
   local origin=$1 id=$2 answer=$3 digest
   fm_ruling_origin_valid "$origin" || return 2
@@ -191,7 +237,8 @@ fm_ruling_record() {  # <origin> <hold-id> <answer>
   fm_ruling_log_valid || return 1
   digest=$(fm_ruling_sha256 "$answer") || return 1
   if fm_ruling_last_reply_record "$id" 2>/dev/null \
-    && [ "$FM_RULING_LAST_REPLY_DECISION" = "$digest" ]; then
+    && [ "$FM_RULING_LAST_REPLY_DECISION" = "$digest" ] \
+    && [ "$FM_RULING_LAST_REPLY_ORIGIN" = "$origin" ]; then
     return 0
   fi
   fm_ruling_append REPLY "$id" "$digest" - "$origin"
@@ -212,6 +259,10 @@ fm_ruling_answer() {  # <hold-id>
   fm_ruling_ingest || return 1
   fm_ruling_last_record "$wanted" || return 1
   case "$FM_RULING_LAST_TYPE" in REPLY|COMMIT) ;; *) return 1 ;; esac
+  if [ "$FM_RULING_LAST_ORIGIN" = chat ]; then
+    fm_ruling_chat_answer "$wanted"
+    return
+  fi
   while IFS=$'\t' read -r id answer _origin; do
     [ "$id" = "$wanted" ] || continue
     digest=$(fm_ruling_sha256 "$answer") || return 1

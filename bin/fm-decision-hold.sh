@@ -36,8 +36,8 @@
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
 # source before this gate has succeeded.
-# `record-ruling` reads a multiline ruling from stdin by default or from an exact
-# mode-0600 regular file, and never accepts ruling prose in argv.
+# `record-ruling` reads a multiline ruling from stdin by default or from the exact
+# mode-0600 canonical data/decisions/<hold-id>.md record, and never accepts ruling prose in argv.
 # The public operation accepts only origin chat.
 # Origin captain-typed is reserved for the captain-owned reply-file adapter, and
 # origin linear is reserved for a later authenticated adapter.
@@ -486,7 +486,7 @@ require_session_lock_ownership() {
 }
 
 command_record_ruling() {
-  local id=${1:-} origin='' ruling_file='' ruling='' device show state held hold_kind
+  local id=${1:-} origin='' ruling_file='' ruling='' show state held hold_kind
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -509,12 +509,8 @@ command_record_ruling() {
     *) fail "--origin must be chat" ;;
   esac
   if [ -n "$ruling_file" ]; then
-    device=$(fm_pr_file_device "$STATE") \
-      || fail "could not validate the private ruling file"
-    fm_pr_private_file_valid "$ruling_file" 600 "$device" \
-      || fail "ruling file must be a private mode-0600 regular file: $ruling_file"
-    ruling=$(cat -- "$ruling_file") \
-      || fail "could not read private ruling file: $ruling_file"
+    ruling=$(fm_ruling_read_private_decision "$id" "$ruling_file") \
+      || fail "ruling file must be the canonical private mode-0600 decision record: $FM_RULING_DECISIONS/$id.md"
   else
     [ ! -t 0 ] || fail "ruling text is required on stdin or through --ruling-file"
     ruling=$(cat) || fail "could not read ruling text from stdin"

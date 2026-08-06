@@ -44,7 +44,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-REPLIES="${FM_CAPTAIN_REPLIES_OVERRIDE:-$FM_HOME/data/captain-replies.md}"
 CHECK_ID=captain-ruling
 CHECK="$STATE/$CHECK_ID.check.sh"
 SEEN="$STATE/.captain-rulings-seen"
@@ -233,11 +232,24 @@ detect_rulings() {
     [ -n "$id" ] || continue
     fm_pr_task_id_valid "$id" || return 0
     fm_ruling_committed_record "$id" || return 0
-    [ -n "$FM_RULING_COMMITTED_DECISION" ] || continue
-    case ",$possible_disagreements," in
-      *",$id,"*) ;;
-      *) possible_disagreements="${possible_disagreements:+$possible_disagreements,}$id" ;;
-    esac
+    if [ -n "$FM_RULING_COMMITTED_DECISION" ]; then
+      case ",$possible_disagreements," in
+        *",$id,"*) ;;
+        *) possible_disagreements="${possible_disagreements:+$possible_disagreements,}$id" ;;
+      esac
+      continue
+    fi
+    fm_ruling_last_record "$id" || return 0
+    [ "$FM_RULING_LAST_TYPE" = REPLY ] \
+      && [ "$FM_RULING_LAST_ORIGIN" = chat ] || continue
+    answer=$(fm_ruling_chat_answer "$id") || continue
+    digest=$(ruling_digest "$id" "$answer") || return 0
+    if { [ -f "$SEEN" ] && grep -Fqx "$digest" "$SEEN"; } \
+      || printf '%s' "$hashes" | grep -Fqx "$digest"; then
+      continue
+    fi
+    hashes="${hashes}${digest}"$'\n'
+    case ",$ids," in *",$id,"*) ;; *) ids="${ids:+$ids,}$id" ;; esac
   done <<< "$replyable_ids"
   while IFS=$'\t' read -r id answer _origin; do
     [ -n "$id" ] && [ -n "$answer" ] || continue
@@ -310,10 +322,6 @@ answer_for_hold() {
   local id=${1:-} answer queue replyable=0
   [ "$#" -eq 1 ] || return 2
   fm_pr_task_id_valid "$id" || return 2
-  [ -f "$REPLIES" ] && [ ! -L "$REPLIES" ] || {
-    printf 'fm-captain-ruling-check: captain replies are unavailable\n' >&2
-    return 1
-  }
   queue=$(captain_queue) || {
     printf 'fm-captain-ruling-check: captain queue is unavailable\n' >&2
     return 1
