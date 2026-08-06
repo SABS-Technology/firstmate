@@ -4,6 +4,7 @@
 # The semantic policy is owned once by
 # .agents/skills/decision-hold-lifecycle/SKILL.md. This script never reads report,
 # visual-review, chat, or terminal prose to guess whether a decision exists.
+# Its explicit record-ruling input is a firstmate transcription, not inference.
 # The invoking agent inventories unresolved decisions, assigns stable keys, and
 # routes dependent work. This script supplies deterministic identities, creates
 # and verifies structured tasks-axi captain holds, records completion attestation
@@ -22,6 +23,8 @@
 #     --title <title> --reason <reason> [--repo <repo>]
 #   fm-decision-hold.sh complete <origin-id> (--none | <decision-key>...)
 #   fm-decision-hold.sh verify <origin-id>
+#   fm-decision-hold.sh record-ruling <hold-id> --origin chat \
+#     [--ruling-file <private-path>]
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
 #     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
 #   fm-decision-hold.sh resolve-item <task-id> --decision-file <path>
@@ -33,6 +36,14 @@
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
 # source before this gate has succeeded.
+# `record-ruling` reads a multiline ruling from stdin by default or from the exact
+# mode-0600 canonical data/decisions/<hold-id>.md record, and never accepts ruling prose in argv.
+# The public operation accepts only origin chat.
+# Origin captain-typed is reserved for the captain-owned reply-file adapter, and
+# origin linear is reserved for a later authenticated adapter.
+# On success it prints the exact recorded chat ruling as a mandatory quote-back
+# prompt; the lifecycle owner requires firstmate to quote it to the captain before
+# dependent work proceeds.
 #
 # `resolve` requires the canonical regular data/decisions/<hold-id>.md record.
 # Every --routed-to task must durably point to that exact record in its body or brief and be blocked by the hold.
@@ -474,6 +485,61 @@ require_session_lock_ownership() {
   fail "resolve does not own the home session lock (holder=$holder)"
 }
 
+command_record_ruling() {
+  local id=${1:-} origin='' ruling_file='' ruling='' show state held hold_kind
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --origin) shift; origin=${1:-} ;;
+      --ruling-file) shift; ruling_file=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug hold-id "$id"
+  case "$origin" in
+    chat) ;;
+    captain-typed)
+      fail "origin captain-typed is reserved for the captain-owned reply-file adapter"
+      ;;
+    linear)
+      fail "origin linear is reserved for a later authenticated adapter"
+      ;;
+    *) fail "--origin must be chat" ;;
+  esac
+  if [ -n "$ruling_file" ]; then
+    ruling=$(fm_ruling_read_private_decision "$id" "$ruling_file") \
+      || fail "ruling file must be the canonical private mode-0600 decision record: $FM_RULING_DECISIONS/$id.md"
+  else
+    [ ! -t 0 ] || fail "ruling text is required on stdin or through --ruling-file"
+    ruling=$(cat) || fail "could not read ruling text from stdin"
+  fi
+  [ -n "$ruling" ] || fail "ruling text must not be empty"
+  [ "$(printf '%s' "$ruling" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
+    || fail "ruling text exceeds 8192 bytes"
+  require_tasks_axi
+  require_session_lock_ownership
+  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  state=$(show_field "$show" state)
+  held=$(show_field "$show" held)
+  hold_kind=$(show_field "$show" hold_kind)
+  active_hold_state "$state" \
+    || fail "captain hold $id is not queued or in flight (state=$state)"
+  [ "$held" = yes ] || fail "captain hold $id is not active"
+  [ "$hold_kind" = captain ] || fail "backlog item $id is not held for the captain"
+  if [ "${FM_CAPTAIN_RULING_LOCK_HELD:-0}" != 1 ]; then
+    fm_lock_try_acquire "$RULING_LOCK" \
+      || fail "captain ruling ingestion is already active; record refused"
+    trap 'fm_lock_release "$RULING_LOCK"' EXIT
+    export FM_CAPTAIN_RULING_LOCK_HELD=1
+  fi
+  fm_ruling_record chat "$id" "$ruling" \
+    || fail "captain ruling log is unavailable or malformed"
+  printf 'recorded: %s (origin: chat)\nquote back to captain before dependent work proceeds:\n%s\n' \
+    "$id" "$ruling"
+}
+
 command_id() {
   [ "$#" -eq 2 ] || { usage >&2; exit 2; }
   hold_id "$1" "$2"
@@ -744,6 +810,7 @@ case "${1:-}" in
   hold) shift; command_hold "$@" ;;
   complete) shift; command_complete "$@" ;;
   verify) shift; command_verify "$@" ;;
+  record-ruling) shift; command_record_ruling "$@" ;;
   resolve) shift; command_resolve "$@" ;;
   resolve-item) shift; command_resolve_item "$@" ;;
   -h|--help) usage ;;

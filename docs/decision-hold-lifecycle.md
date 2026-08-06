@@ -29,8 +29,12 @@ It requires the canonical regular `data/decisions/<hold-id>.md` record and verif
 It requires ownership of the home session lock because direct concurrent backlog mutation is unsupported.
 It enumerates blocked dependents again before the first write and refuses if that inventory changed.
 Reply ingestion and resolution serialize program processes through one scoped ruling-resolution lock, but the captain-owned editor deliberately does not participate in that lock.
-The detector ingests complete `data/captain-replies.md` observations as ordered REPLY digests in `state/captain-ruling-log.tsv`.
+`fm-decision-hold.sh record-ruling` records a firstmate's exact multiline chat transcription from stdin or a private mode-0600 file without placing ruling prose in argv.
+The public command accepts only origin `chat`; `captain-typed` belongs to the captain-owned reply-file adapter, while `linear` remains reserved for a later authenticated adapter.
+The detector ingests complete `data/captain-replies.md` observations as ordered `captain-typed` REPLY digests in `state/captain-ruling-log.tsv`.
+Both paths use the same channel-neutral record function, and the resolver accepts the latest matching REPLY without requiring that it came through the Markdown inbox.
 The resolver appends the identity's first matching COMMIT before its first backlog mutation, which is the snapshot commit point selected by the captain on 2026-08-05.
+That COMMIT carries the accepted REPLY's origin.
 That COMMIT remains authoritative for idempotent roll-forward after interruption even if a later editor observation appends another REPLY.
 A later REPLY is surfaced as `captain-ruling-revision <hold-id>` and becomes a new decision requiring explicit revocation of the committed ruling rather than an overwrite of it.
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
@@ -42,6 +46,12 @@ A resolver log is accepted only when its storage properties and raw record gramm
 A log that fails that validation blocks ingestion, so the detector emits the identity-free `captain-ruling-error resolver-log-invalid` wake instead of any ruling, and every guarded resolution refuses until the log is repaired.
 Content-level agreement between a REPLY and a COMMIT is deliberately not revalidated by the detector.
 The program-owned writer already requires the last record for the hold to be a matching REPLY before it appends a COMMIT, while a non-program writer falls within the local ruling-channel trust gap accepted by the captain's 2026-08-04 ruling.
+
+The origin-bearing wire format is schema v2.
+New records retain the event type as field one and add the literal `v2` plus an origin field: `REPLY<TAB>v2<TAB><hold-id><TAB><answer-digest><TAB>-<TAB><origin>` and `COMMIT<TAB>v2<TAB><hold-id><TAB><answer-digest><TAB><route-set-digest><TAB><origin>`.
+The strict raw Perl validator accepts only these v2 rows or the legacy four-field v1 grammar.
+Readers normalize legacy rows to origin `captain-typed`, because the old program could produce REPLY only from the captain-owned file adapter, and they never rewrite those historical bytes.
+An old REPLY can therefore gain a v2 `captain-typed` COMMIT during resolution, while an existing old COMMIT remains the authoritative retry identity.
 
 The detector separately compares the canonical captain queue's open state with the resolver log's settled state.
 When the log already carries a COMMIT for a hold the queue still calls open and replyable, it reads both sources again after a bounded delay so the normal COMMIT-before-close roll-forward window can finish.
@@ -68,6 +78,8 @@ A compromised local process can fabricate a ruling, and no signing key, shared s
 The detection boundary is human detection: a fabricated record in `data/decisions/` does not match any ruling the captain remembers making.
 Captain rulings normally arrive in chat or Linear.
 The queue file is only a fallback and does not become the primary ruling path.
+An origin records provenance rather than authentication: a chat transcription says `chat` and is never presented as the captain's typed signature.
+The lifecycle policy requires firstmate to quote the exact recorded chat ruling back to the captain before dependent work proceeds.
 
 `bin/fm-captain-ruling-check.sh` emits only privacy-safe hold identities from its watcher path.
 It reads complete `<hold-id>: <answer>` lines from captain-owned `data/captain-replies.md`, atomically ingests new answer digests into the program log, and never writes the editor surface.
@@ -93,6 +105,9 @@ Plural blocker-readiness and mixed-home projection verification date: 2026-07-22
 Captain-ruling round-trip verification date: 2026-08-03.
 Review-finding regression verification date: 2026-08-04.
 Queue-versus-log disagreement regression verification date: 2026-08-05.
+Origin-bearing chat-ruling regression and end-to-end evidence date: 2026-08-05.
+
+The complete scratch-home chat transcript is recorded in `docs/chat-ruling-round-trip-evidence.md`.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.

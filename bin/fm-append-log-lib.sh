@@ -58,7 +58,7 @@ fm_append_log_record() {  # <path> <device> <record> <schema>
       my ($kind, $line) = @_;
       return $line =~ /\A[A-Za-z0-9_-][A-Za-z0-9._-]*\t(?:implementation|investigation|validation|pr-open|merged|complete)\t[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\n\z/
         if $kind eq "stage";
-      return $line =~ /\A(?:REPLY\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t-|COMMIT\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t[0-9a-f]{64})\n\z/
+      return $line =~ /\A(?:REPLY\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t-|COMMIT\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t[0-9a-f]{64}|REPLY\tv2\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t-\t(?:captain-typed|chat|linear)|COMMIT\tv2\t[A-Za-z0-9_-][A-Za-z0-9._-]*\t[0-9a-f]{64}\t[0-9a-f]{64}\t(?:captain-typed|chat|linear))\n\z/
         if $kind eq "captain-ruling";
       return 0;
     }

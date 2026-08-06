@@ -17,12 +17,12 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and secondmate homes from origin          |
 | `fm-backlog-handoff.sh`  | Validate and delegate queued backlog-item moves into a secondmate home               |
-| `fm-decision-hold.sh`    | Create, verify, complete, and resolve durable captain-held decisions                 |
+| `fm-decision-hold.sh`    | Record chat rulings and create, verify, complete, and resolve durable captain-held decisions |
 | `fm-captain-ruling-check.sh` | Install and run the global registered detector, or read the current answer for one open captain decision |
 | `fm-captain-queue.sh`    | Print the canonical read-only union of captain-held work, flagging asymmetric membership as an orphan (schema `fm-captain-queue.v1`) |
 | `fm-pending-decisions-generate.sh` | Regenerate the captain-read-only `data/pending-decisions.md` projection; captain edits live separately in `data/captain-replies.md` |
 | `fm-stage.sh`            | Record and read the append-only work-stage axis, independent of crew supervision status |
-| `fm-captain-ruling-log-lib.sh` | Shared ordered REPLY/COMMIT ruling-log reader, ingester, and snapshot-commit writer  |
+| `fm-captain-ruling-log-lib.sh` | Shared versioned origin-bearing REPLY/COMMIT ruling-log reader, ingester, and snapshot-commit writer |
 | `fm-append-log-lib.sh`   | Shared failure-atomic append writer for bounded private event logs                    |
 | `fm-linear-projection.sh` | Run the one-way fail-closed Linear projection sync or its separate unauthenticated live schema check |
 | `fm-brief.sh`            | Scaffold ship, scout, secondmate-charter, and Herdr-lab briefs                       |
